@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>myportal — 키워드 규칙</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="./assets/tailwind-config.js"></script>
+<link rel="stylesheet" href="./assets/tokens.css" />
+<style>
+  #app {
+    display: grid;
+    grid-template-columns: var(--pane-0-width, 340px) minmax(640px, 1fr);
+    height: calc(100vh - 44px);
+  }
+  @media (max-width: 1023px) {
+    #app { grid-template-columns: 1fr; height: auto; }
+  }
+  .pane-scroll { overflow-y: auto; height: 100%; }
+
+  .rule-group-label { font-size: 10px; letter-spacing: 0.04em; color: var(--ink-2); margin-bottom: 6px; margin-top: 14px; }
+  .rule-item { border: 1px solid transparent; border-bottom: 1px solid var(--rule); padding: 8px 10px; cursor: pointer; }
+  .rule-item:hover { background: var(--paper); }
+  .rule-item-active { background: var(--paper); border-color: var(--ink); }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--font-mono); font-size: 11px;
+    border: 1px solid var(--ink-2); color: var(--ink);
+    padding: 2px 6px; margin: 2px 6px 2px 0;
+  }
+  .chip-x { background: none; border: none; color: var(--ink-2); cursor: pointer; font-family: var(--font-mono); font-size: 12px; line-height: 1; padding: 0; }
+  .chip-x:hover { color: var(--red); }
+  .chip-input-row {
+    display: flex; flex-wrap: wrap; align-items: center;
+    border-bottom: 1px solid var(--ink-2); padding: 4px 2px; min-height: 34px;
+  }
+  .chip-input-row:focus-within { border-bottom: 2px solid var(--blue); }
+  .chip-input-row input {
+    border: none; background: transparent; outline: none;
+    font-family: var(--font-sans); font-size: 13px; flex: 1; min-width: 140px; padding: 4px 2px; color: var(--ink);
+  }
+
+  .action-option { border: 1px solid var(--rule); padding: 8px 10px; margin-bottom: 6px; cursor: pointer; }
+  .action-option:hover { background: var(--paper-2); }
+  .action-option-active { border-color: var(--ink); background: var(--paper-2); }
+
+  .preview-row { border-bottom: 1px solid var(--rule); padding: 6px 0; }
+  .preview-row:last-child { border-bottom: none; }
+
+  .field-label { font-size: 11px; letter-spacing: 0.03em; color: var(--ink-2); margin-bottom: 4px; margin-top: 16px; }
+  .field-label:first-child { margin-top: 0; }
+</style>
+</head>
+<body data-active-page="keywords" class="bg-paper text-ink font-sans">
+<header id="masthead" style="height: 44px;"></header>
+
+<div id="app">
+  <!-- 좌측: 규칙 목록 -->
+  <aside id="pane-left" class="bg-paper-2 pane-scroll" style="border-right: 1px solid var(--rule);">
+    <div class="p-3">
+      <div class="flex items-center justify-between">
+        <h1  style="font-size: 18px; font-weight: 700;">키워드 규칙</h1>
+        <button id="new-rule-btn" class="btn btn-sm">새 규칙</button>
+      </div>
+      <div id="rule-groups"></div>
+    </div>
+  </aside>
+
+  <!-- 우측: 편집기 + 매칭 미리보기 -->
+  <main class="pane-scroll">
+    <div class="px-6 pt-5 pb-10" style="max-width: 760px;">
+      <div class="rule-double">
+        <h2 id="editor-heading"  style="font-size: 20px; font-weight: 700;">새 규칙</h2>
+      </div>
+
+      <div class="field-label">규칙 이름</div>
+      <input id="f-name" class="input-line" type="text" placeholder="예: 휴머노이드" />
+
+      <div class="field-label">키워드 (여러 개, OR 조건 · Enter로 추가)</div>
+      <div class="chip-input-row" id="kw-row">
+        <span id="kw-chips"></span>
+        <input id="kw-input" type="text" placeholder="키워드 입력 후 Enter" />
+      </div>
+
+      <div class="field-label">제외어</div>
+      <div class="chip-input-row" id="ex-row">
+        <span id="ex-chips"></span>
+        <input id="ex-input" type="text" placeholder="제외어 입력 후 Enter" />
+      </div>
+
+      <div class="field-label">적용 범위</div>
+      <div class="flex items-center gap-3 flex-wrap">
+        <select id="f-scope-type" class="input-line" style="width: auto; padding: 6px 8px;">
+          <option value="all">전체</option>
+          <option value="category">카테고리</option>
+          <option value="tag">태그</option>
+        </select>
+        <select id="f-scope-category" class="input-line hidden" style="width: auto; min-width: 220px; padding: 6px 8px;"></select>
+        <select id="f-scope-tag" class="input-line hidden" style="width: auto; min-width: 160px; padding: 6px 8px;"></select>
+      </div>
+
+      <div class="field-label">동작</div>
+      <div id="action-options"></div>
+
+      <p class="text-ink-2 mt-3" style="font-size: 11px; line-height: 1.6;">
+        매칭 규칙: 대소문자·전각/반각 차이를 무시하고, 조사가 붙은 형태도 걸리도록 부분 일치를 기본으로 합니다.
+        규칙은 새 항목 수집 시 백엔드에서 판정되어 저장되며, 저장 시 최근 항목에도 재적용됩니다.
+      </p>
+
+      <div class="flex items-center gap-2 mt-5">
+        <button id="save-rule-btn" class="btn btn-primary">규칙 저장</button>
+        <button id="delete-rule-btn" class="btn">삭제</button>
+      </div>
+
+      <div style="margin-top: 28px;">
+        <div class="rule-double">
+          <h3  style="font-size: 16px; font-weight: 700;">매칭 미리보기</h3>
+        </div>
+        <div id="preview-summary" class="font-mono text-ink-2 mt-2" style="font-size: 12px;"></div>
+        <div id="preview-list" class="mt-2"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="./assets/mock-data.js"></script>
+<script src="./assets/shell.js"></script>
+<script src="./assets/resizable.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var MOCK = window.MOCK;
+  var Shell = window.MyPortalShell;
+  var esc = Shell.escapeHtml;
+
+  // ---------------- 패널 리사이즈 ----------------
+  if (window.MyPortalResizable) {
+    window.MyPortalResizable.init(document.getElementById('app'), {
+      storageKey: 'myportal-resize-keywords',
+      flexIndex: 1,
+      panes: [
+        { default: 340, min: 260, max: 560 },
+        { min: 640 }
+      ]
+    });
+  }
+
+  var ACTION_ORDER = ['emphasize', 'alert', 'mute'];
+  var ACTION_DESC = {
+    emphasize: '강조: 목록에서 표시·상단 정렬',
+    alert: '알림: 키워드 알림 뷰 + 다이제스트 최상단',
+    mute: '뮤트: 목록에서 숨김 (숨긴 건수만 표시)'
+  };
+  var GROUP_ORDER = [
+    { action: 'alert', label: '알림' },
+    { action: 'emphasize', label: '강조' },
+    { action: 'mute', label: '뮤트' }
+  ];
+
+  // ---------------- 카테고리/태그 조회 헬퍼 ----------------
+  var categoriesById = {};
+  var childrenByParent = {};
+  MOCK.categories.forEach(function (c) {
+    categoriesById[c.id] = c;
+    var key = c.parentId || '__root__';
+    if (!childrenByParent[key]) childrenByParent[key] = [];
+    childrenByParent[key].push(c);
+  });
+  function categoryPathLabel(catId) {
+    var cat = categoriesById[catId];
+    if (!cat) return '';
+    if (!cat.parentId) return cat.name;
+    return categoryPathLabel(cat.parentId) + ' > ' + cat.name;
+  }
+  function descendantCategoryIds(catId) {
+    var out = [catId];
+    var kids = childrenByParent[catId] || [];
+    kids.forEach(function (k) { out = out.concat(descendantCategoryIds(k.id)); });
+    return out;
+  }
+
+  var sourcesById = {};
+  MOCK.sources.forEach(function (s) { sourcesById[s.id] = s; });
+
+  // ---------------- 규칙 목록 (로컬 상태, MOCK.keywordRules 복제) ----------------
+  var rules = MOCK.keywordRules.map(function (r) {
+    return {
+      id: r.id,
+      name: r.name,
+      keywords: r.keywords.slice(),
+      exclude: (r.exclude || []).slice(),
+      scope: r.scope || 'all',
+      scopeId: r.scopeId || null,
+      action: r.action
+    };
+  });
+  var nextRuleSeq = 1;
+
+  var draft = null; // 현재 편집 중인 규칙(사본). id === null 이면 새 규칙.
+  var selectedRuleId = null;
+
+  // ---------------- 매칭 유틸 (KW-03: 대소문자/전각·반각 무시, 부분 일치) ----------------
+  function normalizeText(s) {
+    return String(s || '')
+      .toLowerCase()
+      .replace(/[！-～]/g, function (ch) { return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0); })
+      .replace(/　/g, ' ');
+  }
+
+  function inScope(item, scope, scopeId) {
+    var source = sourcesById[item.sourceId];
+    if (!source) return false;
+    if (scope === 'category') return descendantCategoryIds(scopeId).indexOf(source.categoryId) !== -1;
+    if (scope === 'tag') return source.tags.indexOf(scopeId) !== -1;
+    return true; // 전체
+  }
+
+  function matchesRuleDraft(item, kws, exs, scope, scopeId) {
+    if (!inScope(item, scope, scopeId)) return false;
+    var title = normalizeText(item.title);
+    var hasKw = kws.some(function (kw) {
+      var nk = normalizeText(kw);
+      return nk && title.indexOf(nk) !== -1;
+    });
+    if (!hasKw) return false;
+    var hasExclude = exs.some(function (ex) {
+      var ne = normalizeText(ex);
+      return ne && title.indexOf(ne) !== -1;
+    });
+    return !hasExclude;
+  }
+
+  function last7dCutoff() {
+    return new Date(new Date(MOCK.now).getTime() - 7 * 86400000);
+  }
+
+  function matchedItemsFor(kws, exs, scope, scopeId) {
+    var cutoff = last7dCutoff();
+    return MOCK.items
+      .filter(function (it) { return new Date(it.collectedAt) >= cutoff; })
+      .filter(function (it) { return matchesRuleDraft(it, kws, exs, scope, scopeId); })
+      .sort(function (a, b) { return new Date(b.collectedAt) - new Date(a.collectedAt); });
+  }
+
+  function ruleMatchCount(rule) {
+    return matchedItemsFor(rule.keywords, rule.exclude, rule.scope, rule.scopeId).length;
+  }
+
+  function scopeLabel(scope, scopeId) {
+    if (scope === 'category') return categoryPathLabel(scopeId) || '카테고리';
+    if (scope === 'tag') {
+      var t = MOCK.tags.filter(function (x) { return x.id === scopeId; })[0];
+      return '#' + (t ? t.name : scopeId);
+    }
+    return '전체';
+  }
+
+  function actionStampStyle(action) {
+    if (action === 'alert') return 'color:var(--red); border-color:var(--red);';
+    if (action === 'emphasize') return 'color:var(--amber); border-color:var(--amber);';
+    return 'color:var(--ink-2); border-color:var(--ink-2);';
+  }
+
+  // ---------------- 좌측: 규칙 목록 렌더 ----------------
+  function renderRuleGroups() {
+    var el = document.getElementById('rule-groups');
+    var html = '';
+    GROUP_ORDER.forEach(function (g) {
+      var groupRules = rules.filter(function (r) { return r.action === g.action; });
+      html += '<div class="rule-group-label">' + esc(g.label) + ' (' + groupRules.length + ')</div>';
+      if (!groupRules.length) {
+        html += '<div class="text-ink-2" style="font-size:12px; padding:4px 2px;">규칙 없음</div>';
+        return;
+      }
+      groupRules.forEach(function (r) {
+        var active = r.id === selectedRuleId;
+        var count = ruleMatchCount(r);
+        html += '<div class="rule-item' + (active ? ' rule-item-active' : '') + '" data-rule-id="' + r.id + '">' +
+          '<div class="flex items-center justify-between gap-2">' +
+            '<span class="stamp" style="' + actionStampStyle(r.action) + '">' + esc(MOCK.ruleActionLabels[r.action]) + '</span>' +
+            '<span class="font-mono text-ink-2" style="font-size:11px;">최근 7일 ' + count + '건</span>' +
+          '</div>' +
+          '<div class="mt-1" style="font-size:13px; font-weight:500;">' + esc(r.name) + '</div>' +
+          '<div class="font-mono text-ink-2 mt-1" style="font-size:11px;">' + (r.keywords.map(esc).join(' / ') || '(키워드 없음)') + '</div>' +
+          '<div class="text-ink-2 mt-1" style="font-size:11px;">' + esc(scopeLabel(r.scope, r.scopeId)) + '</div>' +
+        '</div>';
+      });
+    });
+    el.innerHTML = html;
+    document.querySelectorAll('[data-rule-id]').forEach(function (row) {
+      row.addEventListener('click', function () {
+        loadRuleIntoEditor(row.getAttribute('data-rule-id'));
+      });
+    });
+  }
+
+  // ---------------- 우측: 편집기 ----------------
+  function newDraft() {
+    return { id: null, name: '', keywords: [], exclude: [], scope: 'all', scopeId: null, action: 'emphasize' };
+  }
+
+  function loadRuleIntoEditor(ruleId) {
+    var r = rules.filter(function (x) { return x.id === ruleId; })[0];
+    if (!r) return;
+    selectedRuleId = ruleId;
+    draft = {
+      id: r.id, name: r.name, keywords: r.keywords.slice(), exclude: r.exclude.slice(),
+      scope: r.scope, scopeId: r.scopeId, action: r.action
+    };
+    renderAll();
+  }
+
+  function startNewRule() {
+    selectedRuleId = null;
+    draft = newDraft();
+    renderAll();
+    document.getElementById('f-name').focus();
+  }
+
+  function populateScopeSelects() {
+    var catSel = document.getElementById('f-scope-category');
+    catSel.innerHTML = MOCK.categories.map(function (c) {
+      return '<option value="' + c.id + '">' + esc(categoryPathLabel(c.id)) + '</option>';
+    }).join('');
+    var tagSel = document.getElementById('f-scope-tag');
+    tagSel.innerHTML = MOCK.tags.map(function (t) {
+      return '<option value="' + t.id + '">#' + esc(t.name) + '</option>';
+    }).join('');
+  }
+
+  function renderChips(spanId, arr) {
+    var el = document.getElementById(spanId);
+    el.innerHTML = arr.map(function (kw, idx) {
+      return '<span class="chip">' + esc(kw) + '<button type="button" class="chip-x" data-chip-remove="' + spanId + ':' + idx + '">×</button></span>';
+    }).join('');
+  }
+
+  function renderEditorFields() {
+    document.getElementById('editor-heading').textContent = draft.id ? '규칙 편집' : '새 규칙';
+    document.getElementById('f-name').value = draft.name;
+    renderChips('kw-chips', draft.keywords);
+    renderChips('ex-chips', draft.exclude);
+
+    document.getElementById('f-scope-type').value = draft.scope;
+    document.getElementById('f-scope-category').classList.toggle('hidden', draft.scope !== 'category');
+    document.getElementById('f-scope-tag').classList.toggle('hidden', draft.scope !== 'tag');
+    if (draft.scope === 'category' && draft.scopeId) document.getElementById('f-scope-category').value = draft.scopeId;
+    if (draft.scope === 'tag' && draft.scopeId) document.getElementById('f-scope-tag').value = draft.scopeId;
+
+    var actionsEl = document.getElementById('action-options');
+    actionsEl.innerHTML = ACTION_ORDER.map(function (a) {
+      var active = draft.action === a;
+      return '<label class="action-option' + (active ? ' action-option-active' : '') + '" data-action-option="' + a + '" style="display:block;">' +
+        '<input type="radio" name="rule-action" value="' + a + '"' + (active ? ' checked' : '') + ' style="margin-right:8px;" />' +
+        '<span style="font-size:13px;">' + esc(ACTION_DESC[a]) + '</span>' +
+      '</label>';
+    }).join('');
+
+    document.getElementById('delete-rule-btn').disabled = !draft.id;
+  }
+
+  function renderPreview() {
+    var matched = matchedItemsFor(draft.keywords, draft.exclude, draft.scope, draft.scopeId);
+    document.getElementById('preview-summary').textContent = '최근 7일 ' + matched.length + '건 일치';
+
+    var listEl = document.getElementById('preview-list');
+    if (!matched.length) {
+      listEl.innerHTML = '<div class="text-ink-2 py-3" style="font-size:12px;">일치하는 항목이 없습니다. 키워드를 입력하면 즉시 반영됩니다.</div>';
+      return;
+    }
+    listEl.innerHTML = matched.slice(0, 30).map(function (it) {
+      var source = sourcesById[it.sourceId];
+      return '<div class="preview-row">' +
+        '<div class="flex items-baseline justify-between gap-3">' +
+          '<span style="font-size:13px;">' + highlightPreview(it.title, draft.keywords) + '</span>' +
+          '<span class="font-mono text-ink-2 shrink-0" style="font-size:11px;">' + esc(source ? source.name : '') + ' · ' + it.collectedAt.slice(5, 10).replace('-', '.') + '</span>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function highlightPreview(title, keywords) {
+    var out = esc(title);
+    keywords.forEach(function (kw) {
+      var escKw = esc(kw);
+      if (!escKw) return;
+      var re = new RegExp(escKw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      out = out.replace(re, function (m) { return '<mark class="kw-mark">' + m + '</mark>'; });
+    });
+    return out;
+  }
+
+  function renderAll() {
+    renderRuleGroups();
+    renderEditorFields();
+    renderPreview();
+  }
+
+  // ---------------- 이벤트 바인딩 (정적, 한 번만) ----------------
+  document.getElementById('new-rule-btn').addEventListener('click', startNewRule);
+
+  document.getElementById('f-name').addEventListener('input', function (e) { draft.name = e.target.value; });
+
+  function addChip(input, arr) {
+    var v = input.value.trim();
+    if (!v) return;
+    if (arr.indexOf(v) === -1) arr.push(v);
+    input.value = '';
+  }
+
+  document.getElementById('kw-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addChip(e.target, draft.keywords);
+      renderChips('kw-chips', draft.keywords);
+      renderRuleGroups();
+      renderPreview();
+    } else if (e.key === 'Backspace' && !e.target.value && draft.keywords.length) {
+      draft.keywords.pop();
+      renderChips('kw-chips', draft.keywords);
+      renderRuleGroups();
+      renderPreview();
+    }
+  });
+
+  document.getElementById('ex-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addChip(e.target, draft.exclude);
+      renderChips('ex-chips', draft.exclude);
+      renderPreview();
+    } else if (e.key === 'Backspace' && !e.target.value && draft.exclude.length) {
+      draft.exclude.pop();
+      renderChips('ex-chips', draft.exclude);
+      renderPreview();
+    }
+  });
+
+  document.getElementById('kw-row').addEventListener('click', function (e) {
+    var btn = e.target.closest && e.target.closest('[data-chip-remove]');
+    if (!btn) return;
+    var idx = parseInt(btn.getAttribute('data-chip-remove').split(':')[1], 10);
+    draft.keywords.splice(idx, 1);
+    renderChips('kw-chips', draft.keywords);
+    renderRuleGroups();
+    renderPreview();
+  });
+
+  document.getElementById('ex-row').addEventListener('click', function (e) {
+    var btn = e.target.closest && e.target.closest('[data-chip-remove]');
+    if (!btn) return;
+    var idx = parseInt(btn.getAttribute('data-chip-remove').split(':')[1], 10);
+    draft.exclude.splice(idx, 1);
+    renderChips('ex-chips', draft.exclude);
+    renderPreview();
+  });
+
+  document.getElementById('f-scope-type').addEventListener('change', function (e) {
+    draft.scope = e.target.value;
+    draft.scopeId = draft.scope === 'all' ? null : (draft.scope === 'category'
+      ? document.getElementById('f-scope-category').value
+      : document.getElementById('f-scope-tag').value);
+    document.getElementById('f-scope-category').classList.toggle('hidden', draft.scope !== 'category');
+    document.getElementById('f-scope-tag').classList.toggle('hidden', draft.scope !== 'tag');
+    renderRuleGroups();
+    renderPreview();
+  });
+  document.getElementById('f-scope-category').addEventListener('change', function (e) {
+    draft.scopeId = e.target.value;
+    renderRuleGroups();
+    renderPreview();
+  });
+  document.getElementById('f-scope-tag').addEventListener('change', function (e) {
+    draft.scopeId = e.target.value;
+    renderRuleGroups();
+    renderPreview();
+  });
+
+  document.getElementById('action-options').addEventListener('click', function (e) {
+    var opt = e.target.closest && e.target.closest('[data-action-option]');
+    if (!opt) return;
+    draft.action = opt.getAttribute('data-action-option');
+    renderEditorFields();
+    renderRuleGroups();
+  });
+
+  document.getElementById('save-rule-btn').addEventListener('click', function () {
+    if (!draft.name.trim()) { Shell.showToast('규칙 이름을 입력하세요'); return; }
+    if (!draft.keywords.length) { Shell.showToast('키워드를 1개 이상 입력하세요'); return; }
+    if (draft.id) {
+      var existing = rules.filter(function (r) { return r.id === draft.id; })[0];
+      existing.name = draft.name.trim();
+      existing.keywords = draft.keywords.slice();
+      existing.exclude = draft.exclude.slice();
+      existing.scope = draft.scope;
+      existing.scopeId = draft.scopeId;
+      existing.action = draft.action;
+      Shell.showToast('규칙을 저장했습니다');
+    } else {
+      var id = 'kw-custom-' + (nextRuleSeq++);
+      rules.push({
+        id: id, name: draft.name.trim(), keywords: draft.keywords.slice(), exclude: draft.exclude.slice(),
+        scope: draft.scope, scopeId: draft.scopeId, action: draft.action
+      });
+      draft.id = id;
+      selectedRuleId = id;
+      Shell.showToast('규칙을 저장했습니다');
+    }
+    renderAll();
+  });
+
+  document.getElementById('delete-rule-btn').addEventListener('click', function () {
+    if (!draft.id) return;
+    rules = rules.filter(function (r) { return r.id !== draft.id; });
+    Shell.showToast('규칙을 삭제했습니다');
+    startNewRule();
+  });
+
+  // ---------------- 초기화 ----------------
+  populateScopeSelects();
+  if (rules.length) {
+    loadRuleIntoEditor(rules[0].id);
+  } else {
+    startNewRule();
+  }
+})();
+</script>
+</body>
+</html>

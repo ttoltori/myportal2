@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>myportal — 소스 등록</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="./assets/tailwind-config.js"></script>
+<link rel="stylesheet" href="./assets/tokens.css" />
+<style>
+  #content { max-width: 1560px; margin: 0 auto; }
+  .telegram-log {
+    background: var(--paper-2);
+    border: 1px solid var(--rule);
+    height: 260px;
+    overflow-y: auto;
+    padding: 10px 12px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .telegram-line {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 2px 0;
+    border-bottom: 1px dotted var(--rule);
+  }
+  .telegram-line:last-child { border-bottom: none; }
+  .chip-link {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--blue);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 0;
+  }
+  .chip-link:hover { opacity: 0.75; }
+  .field-col-head {
+    border: 1px solid var(--rule);
+    padding: 6px 8px;
+    vertical-align: top;
+    min-width: 150px;
+  }
+  .field-col-head.is-hidden { opacity: 0.4; }
+  .field-mini-select, .field-mini-input {
+    width: 100%;
+    font-size: 11px;
+    border: 1px solid var(--rule);
+    background: var(--paper);
+    color: var(--ink);
+    padding: 2px 3px;
+    margin-top: 3px;
+    border-radius: 0;
+  }
+  .preview-table td {
+    border: 1px solid var(--rule);
+    padding: 5px 8px;
+    font-size: 12px;
+    vertical-align: top;
+  }
+  .preview-table td.mono { font-family: var(--font-mono); font-size: 11px; }
+  .tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    border: 1px solid var(--ink-2);
+    color: var(--ink-2);
+    padding: 1px 4px 1px 7px;
+    margin: 0 4px 4px 0;
+  }
+  .tag-chip button {
+    border: none;
+    background: none;
+    color: var(--ink-2);
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1;
+    padding: 0 2px;
+  }
+  .tag-chip button:hover { color: var(--red); }
+  .candidate-row {
+    border: 1px solid var(--rule);
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    cursor: pointer;
+  }
+  .candidate-row:hover { background: var(--paper-2); }
+  .section-note {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-2);
+  }
+</style>
+</head>
+<body data-active-page="add-source" class="bg-paper text-ink font-sans">
+<header id="masthead" style="height: 44px;"></header>
+
+<div id="content" class="px-6 py-5">
+  <h1  style="font-size:20px; font-weight:700;">소스 등록</h1>
+  <div class="rule-double" style="margin-top:4px; margin-bottom:16px;"></div>
+
+  <div id="add-source-split" class="grid gap-6" style="grid-template-columns: var(--pane-0-width, 460px) minmax(0,1fr);">
+    <!-- 좌측: URL 입력 + 분석 전보 로그 -->
+    <div>
+      <label class="section-note" style="display:block; margin-bottom:2px;">소스 URL</label>
+      <input id="url-input" class="input-line font-mono" style="font-size:13px;" placeholder="https://example.go.kr/notice/list" />
+      <div class="mt-2" style="font-size:11px;" id="example-chips"></div>
+
+      <div class="mt-3 flex items-center gap-3">
+        <button id="analyze-btn" class="btn btn-primary">분석 시작</button>
+        <label class="flex items-center gap-1 section-note cursor-pointer">
+          <input type="checkbox" id="detail-demo-toggle" />
+          데모: 상세 페이지로 판별된 경우 보기
+        </label>
+      </div>
+
+      <div class="mt-4">
+        <div class="section-note" style="margin-bottom:4px; letter-spacing:0.03em;">분석 전보 로그</div>
+        <div id="log-panel" class="telegram-log">
+          <div class="section-note">URL을 입력하고 분석 시작을 누르면 단계별 로그가 여기 표시됩니다.</div>
+        </div>
+      </div>
+
+      <div id="candidate-panel" class="mt-4 hidden">
+        <div class="section-note" style="margin-bottom:6px; letter-spacing:0.03em;">부모 목록 후보</div>
+        <div id="candidate-list"></div>
+        <div class="candidate-row" id="candidate-none">
+          <input type="radio" name="candidate" id="candidate-radio-none" value="__none__" style="margin-top:3px;" />
+          <label for="candidate-radio-none" style="font-size:13px; cursor:pointer;">
+            <div>링크 전용으로 보관</div>
+            <div class="section-note">부모 목록을 찾지 못했거나 이 URL만 링크로 저장합니다. 수집하지 않습니다.</div>
+          </label>
+        </div>
+        <button id="candidate-continue-btn" class="btn mt-2">선택한 후보로 계속 분석</button>
+      </div>
+    </div>
+
+    <!-- 우측: 추출 미리보기 + 제안 -->
+    <div id="preview-panel" class="hidden">
+      <div class="flex items-baseline justify-between">
+        <div  style="font-size:15px; font-weight:700;">추출 미리보기</div>
+        <div class="section-note" id="preview-summary"></div>
+      </div>
+      <div class="mt-2" style="overflow-x:auto;">
+        <table class="preview-table" style="border-collapse:collapse; width:100%;">
+          <thead>
+            <tr id="preview-head-row"></tr>
+          </thead>
+          <tbody id="preview-body"></tbody>
+        </table>
+      </div>
+
+      <div class="mt-5 grid gap-5" style="grid-template-columns: 1fr 1fr;">
+        <div>
+          <label class="section-note" style="display:block; margin-bottom:2px;">제안 카테고리</label>
+          <select id="category-select" class="input-line" style="font-size:13px;"></select>
+        </div>
+        <div>
+          <label class="section-note" style="display:block; margin-bottom:2px;">표시 이름</label>
+          <input id="display-name-input" class="input-line" style="font-size:13px;" />
+        </div>
+      </div>
+
+      <div class="mt-4">
+        <label class="section-note" style="display:block; margin-bottom:4px;">제안 태그</label>
+        <div id="tag-chips"></div>
+        <div class="flex items-center gap-2 mt-1">
+          <input id="new-tag-input" class="input-line" style="font-size:12px; width:160px;" placeholder="태그 추가" />
+          <button id="add-tag-btn" class="btn btn-sm">추가</button>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-3 mt-5">
+        <button id="save-btn" class="btn btn-primary">이 구조로 저장</button>
+        <button id="reanalyze-btn" class="btn">다시 분석</button>
+      </div>
+      <div id="save-note" class="hidden mt-3 section-note" style="color:var(--ink-2);"></div>
+    </div>
+  </div>
+</div>
+
+<script src="./assets/mock-data.js"></script>
+<script src="./assets/shell.js"></script>
+<script src="./assets/resizable.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var MOCK = window.MOCK;
+  var Shell = window.MyPortalShell;
+  var esc = Shell.escapeHtml;
+
+  // ---------------- 패널 리사이즈 ----------------
+  if (window.MyPortalResizable) {
+    window.MyPortalResizable.init(document.getElementById('add-source-split'), {
+      storageKey: 'myportal-resize-add-source',
+      flexIndex: 1,
+      panes: [
+        { default: 460, min: 360, max: 720 },
+        { min: 420 }
+      ]
+    });
+  }
+
+  // ---------------- 카테고리 경로 라벨 (이 화면 전용 헬퍼) ----------------
+  var categoriesById = {};
+  MOCK.categories.forEach(function (c) { categoriesById[c.id] = c; });
+
+  function categoryPathLabel(catId) {
+    var cat = categoriesById[catId];
+    if (!cat) return '';
+    if (!cat.parentId) return cat.name;
+    return categoryPathLabel(cat.parentId) + ' › ' + cat.name;
+  }
+
+  // ---------------- 예시 URL ----------------
+  var EXAMPLES = [
+    { url: 'https://www.iitp.kr/kr/1/notice/list.it', name: 'IITP 사업공고' },
+    { url: 'https://www.k-startup.go.kr/notice/list', name: 'K-Startup 공고' },
+    { url: 'https://techcrunch.com/category/artificial-intelligence', name: 'TechCrunch AI' }
+  ];
+
+  var chipsEl = document.getElementById('example-chips');
+  chipsEl.innerHTML = EXAMPLES.map(function (e, i) {
+    return '<button type="button" class="chip-link" data-example="' + i + '">' + esc(e.url) + '</button>';
+  }).join('<span class="section-note"> &middot; </span>');
+  chipsEl.querySelectorAll('[data-example]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var idx = Number(btn.getAttribute('data-example'));
+      document.getElementById('url-input').value = EXAMPLES[idx].url;
+      document.getElementById('display-name-input').value = EXAMPLES[idx].name;
+    });
+  });
+
+  // ---------------- 필드 메타 (기본값) ----------------
+  var FIELD_ROLE_OPTIONS = [
+    { value: 'none', label: '없음' },
+    { value: 'title', label: '제목' },
+    { value: 'link', label: '링크' },
+    { value: 'published', label: '게시일' },
+    { value: 'deadline', label: '마감일' },
+    { value: 'summary', label: '요약' }
+  ];
+  var FIELD_TYPE_OPTIONS = ['text', 'url', 'date', 'datetime', 'date_range', 'number', 'image', 'tag_list'];
+
+  function defaultFieldsMeta() {
+    return [
+      { key: 'title', label: '제목', type: 'text', role: 'title', hidden: false },
+      { key: 'announce_no', label: '공고번호', type: 'text', role: 'none', hidden: false },
+      { key: 'period', label: '접수기간', type: 'date_range', role: 'deadline', hidden: false },
+      { key: 'dept', label: '담당부서', type: 'text', role: 'none', hidden: false },
+      { key: 'published', label: '게시일', type: 'date', role: 'published', hidden: false }
+    ];
+  }
+
+  var PREVIEW_ROWS = [
+    { title: '2026년 AI 반도체 첨단 패키징 R&D 지원사업 공고', announce_no: 'IITP-2026-0912', period: '09.10~09.22', dept: 'AI반도체팀', published: '2026-09-10' },
+    { title: '생성형 AI 서비스 실증 지원사업 2차 공고', announce_no: 'IITP-2026-0918', period: '09.18~09.30', dept: '디지털서비스팀', published: '2026-09-18' },
+    { title: '클라우드 기반 AI 학습데이터 플랫폼 고도화 공고', announce_no: 'IITP-2026-0925', period: '08.20~09.05', dept: '데이터팀', published: '2026-08-20' },
+    { title: '지역 SW 융합 클러스터 지원사업 공고', announce_no: 'IITP-2026-0930', period: '09.05~09.19', dept: '지역SW팀', published: '2026-09-05' },
+    { title: '차세대 반도체 설계 전문인력 양성사업 공고', announce_no: 'IITP-2026-0941', period: '09.12~09.28', dept: '인력양성팀', published: '2026-09-12' },
+    { title: '디지털 트윈 기술 실증 지원사업 2차 공고', announce_no: 'IITP-2026-0952', period: '09.15~10.02', dept: '디지털서비스팀', published: '2026-09-15' },
+    { title: 'AI 학습용 데이터 구축사업 수요조사 공고', announce_no: 'IITP-2026-0963', period: '09.08~09.20', dept: '데이터팀', published: '2026-09-08' },
+    { title: '메타버스 콘텐츠 제작 지원사업 공고', announce_no: 'IITP-2026-0974', period: '08.25~09.10', dept: '콘텐츠팀', published: '2026-08-25' },
+    { title: '초거대 AI 활용 실증 지원사업 3차 공고', announce_no: 'IITP-2026-0985', period: '09.16~10.05', dept: 'AI확산팀', published: '2026-09-16' },
+    { title: '정보보호 산업 기술개발 지원사업 공고', announce_no: 'IITP-2026-0996', period: '09.01~09.15', dept: '정보보호팀', published: '2026-09-01' }
+  ];
+
+  var PARENT_CANDIDATES = [
+    { label: 'AI타임스 › 전체기사 목록', url: 'https://www.aitimes.com/news/articleList.html' },
+    { label: 'AI타임스 › AI 기업 섹션 목록', url: 'https://www.aitimes.com/news/articleList.html?sc_section_code=S1N1' }
+  ];
+
+  var fieldsMeta = defaultFieldsMeta();
+  var selectedTags = ['AI', 'R&D'];
+  var baseTime = new Date(MOCK.now);
+  baseTime.setMinutes(baseTime.getMinutes() + 2); // 분석 시작 시각은 마지막 수집 직후로 가정
+
+  // ---------------- 로그 ----------------
+  var logPanel = document.getElementById('log-panel');
+  var logSeconds = 2;
+
+  function nextLogTime() {
+    var t = new Date(baseTime.getTime() + logSeconds * 1000);
+    logSeconds += 4 + Math.floor(Math.random() * 8);
+    return Shell.pad2(t.getHours()) + ':' + Shell.pad2(t.getMinutes()) + ':' + Shell.pad2(t.getSeconds());
+  }
+
+  function clearLog() {
+    logSeconds = 2;
+    logPanel.innerHTML = '';
+  }
+
+  function stampClassFor(kind) {
+    if (kind === 'ok') return 'stamp-ok';
+    if (kind === 'warn') return 'stamp-warn';
+    if (kind === 'fail') return 'stamp-fail';
+    return 'stamp-pause';
+  }
+
+  function appendLog(step, resultText, kind) {
+    var row = document.createElement('div');
+    row.className = 'telegram-line';
+    row.innerHTML =
+      '<span>' + nextLogTime() + ' ' + esc(step) + '</span>' +
+      '<span class="stamp ' + stampClassFor(kind) + '">' + esc(resultText) + '</span>';
+    logPanel.appendChild(row);
+    logPanel.scrollTop = logPanel.scrollHeight;
+  }
+
+  function delay(fn, ms) { return window.setTimeout(fn, ms); }
+
+  // ---------------- 분석 흐름 ----------------
+  var analyzeBtn = document.getElementById('analyze-btn');
+  var candidatePanel = document.getElementById('candidate-panel');
+  var previewPanel = document.getElementById('preview-panel');
+
+  function runListFlow(startDelay) {
+    var t = startDelay || 0;
+    t += 400; delay(function () { appendLog('URL 정규화', '완료', 'ok'); }, t);
+    t += 500; delay(function () { appendLog('RSS/Atom 탐지', '없음', 'pause'); }, t);
+    t += 500; delay(function () { appendLog('구조화 데이터(JSON-LD)', '없음', 'pause'); }, t);
+    t += 600; delay(function () { appendLog('정적 HTML 분석 · 목록 판별', '목록 페이지', 'ok'); }, t);
+    t += 700; delay(function () { appendLog('추출 명세 생성 v1', '완료 (항목 10 · 필드 5)', 'ok'); }, t);
+    t += 500; delay(function () {
+      appendLog('기준선 저장 예정', '10건', 'ok');
+      revealPreview();
+      analyzeBtn.disabled = false;
+    }, t);
+  }
+
+  function runDetailFlow() {
+    var t = 0;
+    t += 400; delay(function () { appendLog('URL 정규화', '완료', 'ok'); }, t);
+    t += 500; delay(function () { appendLog('RSS/Atom 탐지', '없음', 'pause'); }, t);
+    t += 500; delay(function () { appendLog('구조화 데이터(JSON-LD)', '없음', 'pause'); }, t);
+    t += 600; delay(function () { appendLog('정적 HTML 분석 · 목록 판별', '상세 페이지로 판별됨', 'warn'); }, t);
+    t += 600; delay(function () {
+      appendLog('부모 목록 후보 탐색', '후보 ' + PARENT_CANDIDATES.length + '건 발견', 'ok');
+      showCandidates();
+      analyzeBtn.disabled = false;
+    }, t);
+  }
+
+  function showCandidates() {
+    var list = document.getElementById('candidate-list');
+    list.innerHTML = PARENT_CANDIDATES.map(function (c, i) {
+      return '<div class="candidate-row">' +
+        '<input type="radio" name="candidate" id="candidate-radio-' + i + '" value="' + i + '" style="margin-top:3px;" />' +
+        '<label for="candidate-radio-' + i + '" style="font-size:13px; cursor:pointer;">' +
+          '<div>' + esc(c.label) + '</div>' +
+          '<div class="section-note font-mono">' + esc(c.url) + '</div>' +
+        '</label>' +
+      '</div>';
+    }).join('');
+    candidatePanel.classList.remove('hidden');
+  }
+
+  document.getElementById('candidate-continue-btn').addEventListener('click', function () {
+    var checked = candidatePanel.querySelector('input[name="candidate"]:checked');
+    if (!checked) {
+      Shell.showToast('후보를 선택하세요');
+      return;
+    }
+    if (checked.value === '__none__') {
+      candidatePanel.classList.add('hidden');
+      Shell.showToast('링크 전용 소스로 저장되었습니다. 수집하지 않습니다.');
+      return;
+    }
+    candidatePanel.classList.add('hidden');
+    appendLog('선택 후보로 목록 분석 재개', '완료', 'ok');
+    runListFlow(200);
+  });
+
+  function revealPreview() {
+    fieldsMeta = defaultFieldsMeta();
+    renderPreviewTable();
+    document.getElementById('preview-summary').textContent = '최근 10건 · 필드 5개';
+
+    var catSelect = document.getElementById('category-select');
+    catSelect.innerHTML = MOCK.categories.map(function (c) {
+      return '<option value="' + c.id + '">' + esc(categoryPathLabel(c.id)) + '</option>';
+    }).join('');
+    catSelect.value = 'cat-grant-rnd';
+
+    var nameInput = document.getElementById('display-name-input');
+    if (!nameInput.value) nameInput.value = 'IITP 사업공고';
+
+    selectedTags = ['AI', 'R&D'];
+    renderTagChips();
+
+    document.getElementById('save-note').classList.add('hidden');
+    previewPanel.classList.remove('hidden');
+  }
+
+  function renderPreviewTable() {
+    var headRow = document.getElementById('preview-head-row');
+    headRow.innerHTML = fieldsMeta.map(function (f, idx) {
+      var roleOpts = FIELD_ROLE_OPTIONS.map(function (r) {
+        return '<option value="' + r.value + '"' + (r.value === f.role ? ' selected' : '') + '>' + r.label + '</option>';
+      }).join('');
+      var typeOpts = FIELD_TYPE_OPTIONS.map(function (t) {
+        var label = (MOCK.fieldTypeLabels && MOCK.fieldTypeLabels[t]) || t;
+        return '<option value="' + t + '"' + (t === f.type ? ' selected' : '') + '>' + label + '</option>';
+      }).join('');
+      return '<th class="field-col-head' + (f.hidden ? ' is-hidden' : '') + '" data-field-idx="' + idx + '">' +
+        '<input class="field-mini-input field-label-input" data-idx="' + idx + '" value="' + esc(f.label) + '" />' +
+        '<select class="field-mini-select field-type-select" data-idx="' + idx + '">' + typeOpts + '</select>' +
+        '<select class="field-mini-select field-role-select" data-idx="' + idx + '">' + roleOpts + '</select>' +
+        '<label class="section-note" style="display:flex; align-items:center; gap:3px; margin-top:3px;">' +
+          '<input type="checkbox" class="field-hidden-toggle" data-idx="' + idx + '"' + (f.hidden ? ' checked' : '') + ' /> 숨김' +
+        '</label>' +
+      '</th>';
+    }).join('');
+
+    var body = document.getElementById('preview-body');
+    body.innerHTML = PREVIEW_ROWS.map(function (row) {
+      return '<tr>' + fieldsMeta.map(function (f) {
+        var isMono = f.type === 'date' || f.type === 'date_range' || f.type === 'number' || f.type === 'url';
+        return '<td class="' + (isMono ? 'mono' : '') + (f.hidden ? '' : '') + '" style="' + (f.hidden ? 'opacity:0.4;' : '') + '">' + esc(row[f.key] !== undefined ? row[f.key] : '') + '</td>';
+      }).join('') + '</tr>';
+    }).join('');
+
+    attachFieldHeadHandlers();
+  }
+
+  function attachFieldHeadHandlers() {
+    document.querySelectorAll('.field-label-input').forEach(function (el) {
+      el.addEventListener('change', function () {
+        fieldsMeta[Number(el.getAttribute('data-idx'))].label = el.value;
+        renderPreviewTable();
+      });
+    });
+    document.querySelectorAll('.field-type-select').forEach(function (el) {
+      el.addEventListener('change', function () {
+        fieldsMeta[Number(el.getAttribute('data-idx'))].type = el.value;
+        renderPreviewTable();
+      });
+    });
+    document.querySelectorAll('.field-role-select').forEach(function (el) {
+      el.addEventListener('change', function () {
+        fieldsMeta[Number(el.getAttribute('data-idx'))].role = el.value;
+        renderPreviewTable();
+      });
+    });
+    document.querySelectorAll('.field-hidden-toggle').forEach(function (el) {
+      el.addEventListener('change', function () {
+        fieldsMeta[Number(el.getAttribute('data-idx'))].hidden = el.checked;
+        renderPreviewTable();
+      });
+    });
+  }
+
+  function renderTagChips() {
+    var el = document.getElementById('tag-chips');
+    el.innerHTML = selectedTags.map(function (t, i) {
+      return '<span class="tag-chip">#' + esc(t) + '<button type="button" data-remove-tag="' + i + '">×</button></span>';
+    }).join('');
+    el.querySelectorAll('[data-remove-tag]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        selectedTags.splice(Number(btn.getAttribute('data-remove-tag')), 1);
+        renderTagChips();
+      });
+    });
+  }
+
+  document.getElementById('add-tag-btn').addEventListener('click', function () {
+    var input = document.getElementById('new-tag-input');
+    var v = input.value.trim();
+    if (!v) return;
+    if (selectedTags.indexOf(v) === -1) selectedTags.push(v);
+    input.value = '';
+    renderTagChips();
+  });
+  document.getElementById('new-tag-input').addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      document.getElementById('add-tag-btn').click();
+    }
+  });
+
+  analyzeBtn.addEventListener('click', function () {
+    var url = document.getElementById('url-input').value.trim();
+    if (!url) {
+      Shell.showToast('URL을 입력하세요');
+      return;
+    }
+    analyzeBtn.disabled = true;
+    clearLog();
+    candidatePanel.classList.add('hidden');
+    previewPanel.classList.add('hidden');
+    if (document.getElementById('detail-demo-toggle').checked) {
+      runDetailFlow();
+    } else {
+      runListFlow(0);
+    }
+  });
+
+  document.getElementById('reanalyze-btn').addEventListener('click', function () {
+    previewPanel.classList.add('hidden');
+    analyzeBtn.click();
+  });
+
+  document.getElementById('save-btn').addEventListener('click', function () {
+    Shell.showToast('구조를 저장했습니다');
+    var note = document.getElementById('save-note');
+    note.textContent = '기준선 10건이 저장되었습니다. 이후 새로 올라오는 항목만 새 글로 표시됩니다.';
+    note.classList.remove('hidden');
+  });
+})();
+</script>
+</body>
+</html>

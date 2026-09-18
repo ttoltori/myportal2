@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>myportal — 소스</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="./assets/tailwind-config.js"></script>
+<link rel="stylesheet" href="./assets/tokens.css" />
+<style>
+  #content { max-width: 1680px; margin: 0 auto; padding-bottom: 64px; }
+  table.sources-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.sources-table th {
+    text-align: left;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--ink-2);
+    font-weight: 500;
+    padding: 6px 8px;
+    border-bottom: 2px solid var(--ink);
+  }
+  table.sources-table td {
+    padding: 7px 8px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: middle;
+  }
+  table.sources-table tbody tr:hover { background: var(--paper-2); cursor: pointer; }
+  .name-link { color: var(--ink); font-weight: 500; }
+  .name-link:hover { text-decoration: underline; }
+  .new7d-bar { display: inline-flex; gap: 1px; vertical-align: middle; margin-left: 6px; }
+  .new7d-seg { width: 4px; height: 10px; background: var(--rule); }
+  .new7d-seg.on { background: var(--ink-2); }
+  .bulk-band {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 10px 20px;
+    display: none;
+    align-items: center;
+    gap: 16px;
+    z-index: 150;
+    flex-wrap: wrap;
+  }
+  .bulk-band.show { display: flex; }
+  .bulk-band select, .bulk-band input {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 3px 6px;
+    border: 1px solid var(--paper);
+    background: transparent;
+    color: var(--paper);
+    border-radius: 0;
+  }
+  .bulk-band select option { color: var(--ink); }
+  .bulk-band button {
+    background: transparent;
+    border: 1px solid var(--paper);
+    color: var(--paper);
+    font-family: var(--font-mono);
+    padding: 4px 10px;
+    cursor: pointer;
+    border-radius: 0;
+  }
+  .bulk-band button:hover { background: var(--paper); color: var(--ink); }
+  .filter-bar select, .filter-bar input { font-size: 12px; }
+</style>
+</head>
+<body data-active-page="sources" class="bg-paper text-ink font-sans">
+<header id="masthead" style="height: 44px;"></header>
+
+<div id="content" class="px-6 py-5">
+  <div class="flex items-baseline justify-between">
+    <h1  style="font-size:20px; font-weight:700;">소스</h1>
+    <div class="font-mono text-ink-2" style="font-size:11px;" id="count-summary"></div>
+  </div>
+  <div class="rule-double" style="margin-top:4px; margin-bottom:14px;"></div>
+
+  <div class="filter-bar flex items-center gap-5 flex-wrap mb-3" style="font-size:12px;">
+    <label class="flex items-center gap-1 text-ink-2">
+      상태
+      <select id="filter-status" class="input-line" style="width:auto; padding:2px 4px;">
+        <option value="all">전체</option>
+        <option value="ok">정상</option>
+        <option value="warn">주의</option>
+        <option value="fail">실패</option>
+        <option value="pause">정지</option>
+        <option value="link">링크 전용</option>
+      </select>
+    </label>
+    <label class="flex items-center gap-1 text-ink-2">
+      수집 방식
+      <select id="filter-strategy" class="input-line" style="width:auto; padding:2px 4px;">
+        <option value="all">전체</option>
+        <option value="rss">RSS</option>
+        <option value="structured">구조화</option>
+        <option value="html">정적 HTML</option>
+        <option value="rendered">렌더링</option>
+        <option value="link">링크 전용</option>
+      </select>
+    </label>
+    <label class="flex items-center gap-1 text-ink-2 flex-1" style="min-width:200px; max-width:320px;">
+      검색
+      <input id="filter-text" class="input-line" style="font-size:12px;" placeholder="표시명 또는 URL" />
+    </label>
+  </div>
+
+  <table class="sources-table">
+    <thead>
+      <tr>
+        <th style="width:28px;"><input type="checkbox" id="select-all" /></th>
+        <th>표시명</th>
+        <th>카테고리</th>
+        <th>수집 방식</th>
+        <th>상태</th>
+        <th>마지막 성공</th>
+        <th>7일 신규</th>
+        <th>수집 주기</th>
+      </tr>
+    </thead>
+    <tbody id="sources-body"></tbody>
+  </table>
+  <div id="empty-note" class="hidden text-ink-2 py-6" style="font-size:13px;">조건에 맞는 소스가 없습니다.</div>
+</div>
+
+<div class="bulk-band" id="bulk-band">
+  <span id="bulk-count"></span>
+  <label class="flex items-center gap-1">
+    카테고리 이동
+    <select id="bulk-category"></select>
+  </label>
+  <button id="bulk-move-btn">이동</button>
+  <label class="flex items-center gap-1">
+    태그 부여
+    <input id="bulk-tag-input" placeholder="태그명" style="width:100px;" />
+  </label>
+  <button id="bulk-tag-btn">부여</button>
+  <button id="bulk-pause-btn">일시정지</button>
+  <button id="bulk-unsub-btn">구독 해제</button>
+  <div class="flex-1"></div>
+  <button id="bulk-clear-btn">선택 해제</button>
+</div>
+
+<script src="./assets/mock-data.js"></script>
+<script src="./assets/shell.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var MOCK = window.MOCK;
+  var Shell = window.MyPortalShell;
+  var esc = Shell.escapeHtml;
+
+  var categoriesById = {};
+  MOCK.categories.forEach(function (c) { categoriesById[c.id] = c; });
+  function categoryPathLabel(catId) {
+    var cat = categoriesById[catId];
+    if (!cat) return '미분류';
+    if (!cat.parentId) return cat.name;
+    return categoryPathLabel(cat.parentId) + ' › ' + cat.name;
+  }
+
+  // 로컬 편집 가능한 소스 복사본 (MOCK 원본은 건드리지 않는다)
+  var sources = MOCK.sources.map(function (s) {
+    return {
+      id: s.id, name: s.name, url: s.url, categoryId: s.categoryId, tags: s.tags.slice(),
+      fetchStrategy: s.fetchStrategy, status: s.status, lastSuccess: s.lastSuccess, new7d: s.new7d, interval: s.interval,
+      removed: false
+    };
+  });
+  var sourcesById = {};
+  sources.forEach(function (s) { sourcesById[s.id] = s; });
+
+  var maxNew7d = Math.max.apply(null, sources.map(function (s) { return s.new7d; }).concat([1]));
+
+  var state = { status: 'all', strategy: 'all', text: '' };
+  var selected = {}; // id -> true
+
+  function formatDateTime(iso) {
+    var d = new Date(iso);
+    return Shell.pad2(d.getMonth() + 1) + '.' + Shell.pad2(d.getDate()) + ' ' + Shell.pad2(d.getHours()) + ':' + Shell.pad2(d.getMinutes());
+  }
+
+  function intervalLabel(min) {
+    if (min < 60) return min + '분';
+    if (min % 60 === 0) return (min / 60) + '시간';
+    return (min / 60).toFixed(1) + '시간';
+  }
+
+  function newBarHtml(n) {
+    var segs = 10;
+    var on = Math.round((n / maxNew7d) * segs);
+    var html = '<span class="new7d-bar">';
+    for (var i = 0; i < segs; i++) {
+      html += '<span class="new7d-seg' + (i < on ? ' on' : '') + '"></span>';
+    }
+    html += '</span>';
+    return html;
+  }
+
+  function filteredSources() {
+    var text = state.text.trim().toLowerCase();
+    return sources.filter(function (s) {
+      if (s.removed) return false;
+      if (state.status !== 'all' && s.status !== state.status) return false;
+      if (state.strategy !== 'all' && s.fetchStrategy !== state.strategy) return false;
+      if (text && s.name.toLowerCase().indexOf(text) === -1 && s.url.toLowerCase().indexOf(text) === -1) return false;
+      return true;
+    });
+  }
+
+  function render() {
+    var list = filteredSources();
+    document.getElementById('count-summary').textContent = '전체 ' + sources.filter(function (s) { return !s.removed; }).length + '건 · 표시 ' + list.length + '건';
+
+    var body = document.getElementById('sources-body');
+    if (!list.length) {
+      body.innerHTML = '';
+      document.getElementById('empty-note').classList.remove('hidden');
+    } else {
+      document.getElementById('empty-note').classList.add('hidden');
+      body.innerHTML = list.map(function (s) {
+        var checked = !!selected[s.id];
+        return '<tr data-row-id="' + s.id + '">' +
+          '<td><input type="checkbox" class="row-check" data-id="' + s.id + '"' + (checked ? ' checked' : '') + ' /></td>' +
+          '<td><a class="name-link" data-open="' + s.id + '" href="source-detail.html?id=' + encodeURIComponent(s.id) + '" style="font-size:13px;">' + esc(s.name) + '</a><div class="font-mono text-ink-2" style="font-size:10px;">' + esc(s.url) + '</div></td>' +
+          '<td>' + esc(categoryPathLabel(s.categoryId)) + '</td>' +
+          '<td>' + esc(MOCK.fetchStrategyLabels[s.fetchStrategy] || s.fetchStrategy) + '</td>' +
+          '<td><span class="stamp ' + MOCK.statusStampClass[s.status] + '">' + esc(MOCK.statusLabels[s.status]) + '</span></td>' +
+          '<td class="font-mono">' + formatDateTime(s.lastSuccess) + '</td>' +
+          '<td class="font-mono">' + s.new7d + newBarHtml(s.new7d) + '</td>' +
+          '<td class="font-mono">' + intervalLabel(s.interval) + '</td>' +
+        '</tr>';
+      }).join('');
+    }
+
+    attachRowHandlers();
+    renderBulkBand();
+  }
+
+  function attachRowHandlers() {
+    document.querySelectorAll('.row-check').forEach(function (el) {
+      el.addEventListener('click', function (ev) { ev.stopPropagation(); });
+      el.addEventListener('change', function () {
+        var id = el.getAttribute('data-id');
+        if (el.checked) selected[id] = true; else delete selected[id];
+        renderBulkBand();
+      });
+    });
+    document.querySelectorAll('[data-open]').forEach(function (el) {
+      el.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    });
+    document.querySelectorAll('tr[data-row-id]').forEach(function (tr) {
+      tr.addEventListener('click', function () {
+        window.location.href = 'source-detail.html?id=' + encodeURIComponent(tr.getAttribute('data-row-id'));
+      });
+    });
+  }
+
+  document.getElementById('select-all').addEventListener('change', function (ev) {
+    var checked = ev.target.checked;
+    filteredSources().forEach(function (s) {
+      if (checked) selected[s.id] = true; else delete selected[s.id];
+    });
+    render();
+  });
+
+  document.getElementById('filter-status').addEventListener('change', function (ev) { state.status = ev.target.value; render(); });
+  document.getElementById('filter-strategy').addEventListener('change', function (ev) { state.strategy = ev.target.value; render(); });
+  document.getElementById('filter-text').addEventListener('input', function (ev) { state.text = ev.target.value; render(); });
+
+  // ---------------- 일괄 작업 띠 ----------------
+  var bulkCategorySelect = document.getElementById('bulk-category');
+  bulkCategorySelect.innerHTML = MOCK.categories.map(function (c) {
+    return '<option value="' + c.id + '">' + esc(categoryPathLabel(c.id)) + '</option>';
+  }).join('');
+
+  function selectedIds() { return Object.keys(selected); }
+
+  function renderBulkBand() {
+    var band = document.getElementById('bulk-band');
+    var n = selectedIds().length;
+    if (n > 0) {
+      band.classList.add('show');
+      document.getElementById('bulk-count').textContent = n + '건 선택됨';
+    } else {
+      band.classList.remove('show');
+    }
+  }
+
+  document.getElementById('bulk-clear-btn').addEventListener('click', function () {
+    selected = {};
+    render();
+  });
+
+  document.getElementById('bulk-move-btn').addEventListener('click', function () {
+    var ids = selectedIds();
+    if (!ids.length) return;
+    var target = bulkCategorySelect.value;
+    ids.forEach(function (id) { sourcesById[id].categoryId = target; });
+    Shell.showToast(ids.length + '건을 ‘' + categoryPathLabel(target) + '’(으)로 이동했습니다');
+    selected = {};
+    render();
+  });
+
+  document.getElementById('bulk-tag-btn').addEventListener('click', function () {
+    var ids = selectedIds();
+    var input = document.getElementById('bulk-tag-input');
+    var tagName = input.value.trim();
+    if (!ids.length || !tagName) return;
+    ids.forEach(function (id) {
+      if (sourcesById[id].tags.indexOf(tagName) === -1) sourcesById[id].tags.push(tagName);
+    });
+    Shell.showToast(ids.length + '건에 태그 ‘' + tagName + '’ 부여했습니다');
+    input.value = '';
+    selected = {};
+    render();
+  });
+
+  document.getElementById('bulk-pause-btn').addEventListener('click', function () {
+    var ids = selectedIds();
+    if (!ids.length) return;
+    ids.forEach(function (id) { sourcesById[id].status = 'pause'; });
+    Shell.showToast(ids.length + '건을 일시정지했습니다');
+    selected = {};
+    render();
+  });
+
+  document.getElementById('bulk-unsub-btn').addEventListener('click', function () {
+    var ids = selectedIds();
+    if (!ids.length) return;
+    ids.forEach(function (id) { sourcesById[id].removed = true; });
+    Shell.showToast(ids.length + '건 구독을 해제했습니다');
+    selected = {};
+    render();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>myportal — 메인 데스크</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="./assets/tailwind-config.js"></script>
+<link rel="stylesheet" href="./assets/tokens.css" />
+<style>
+  #app {
+    display: grid;
+    grid-template-columns: var(--pane-0-width, 260px) minmax(480px, 1fr) var(--pane-2-width, 400px);
+    height: calc(100vh - 44px);
+  }
+  @media (min-width: 1920px) {
+    #app { grid-template-columns: var(--pane-0-width, 260px) minmax(480px, 1fr) var(--pane-2-width, 480px); }
+  }
+  @media (max-width: 1279px) {
+    #app { grid-template-columns: var(--pane-0-width, 260px) minmax(0, 1fr); }
+    #pane-right {
+      position: fixed;
+      top: 44px;
+      right: 0;
+      bottom: 0;
+      width: 400px;
+      max-width: 92vw;
+      transform: translateX(100%);
+      transition: transform var(--transition) ease;
+      z-index: 120;
+      border-left: 1px solid var(--rule);
+    }
+    #pane-right.drawer-open { transform: translateX(0); }
+    #pane-right-close { display: inline-flex !important; }
+  }
+  .pane-scroll { overflow-y: auto; height: 100%; }
+  .item-row { border-bottom: 1px solid var(--rule); }
+  .item-row:last-child { border-bottom: none; }
+  .tree-node-label { cursor: pointer; }
+  .tree-node-label:hover { color: var(--ink); }
+  .scope-active { background: var(--rule); }
+  #shortcut-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 300; display: none; align-items: center; justify-content: center; }
+  #shortcut-overlay.show { display: flex; }
+</style>
+</head>
+<body data-active-page="index" class="bg-paper text-ink font-sans">
+<header id="masthead" style="height: 44px;"></header>
+
+<div id="app">
+  <!-- 좌측: 분류함 -->
+  <aside id="pane-left" class="bg-paper-2 pane-scroll" style="border-right: 1px solid var(--rule);">
+    <div class="p-3">
+      <div class="text-ink-2" style="font-size: 10px; letter-spacing: 0.04em; margin-bottom: 6px;">특수 보기</div>
+      <ul id="special-views" style="font-size: 13px;"></ul>
+    </div>
+    <div class="p-3" style="border-top: 1px solid var(--rule);">
+      <div class="text-ink-2" style="font-size: 10px; letter-spacing: 0.04em; margin-bottom: 6px;">분류</div>
+      <div id="tree-root" style="font-size: 13px;"></div>
+    </div>
+    <div class="p-3" style="border-top: 1px solid var(--rule);">
+      <div class="text-ink-2" style="font-size: 10px; letter-spacing: 0.04em; margin-bottom: 6px;">태그</div>
+      <ul id="tag-list" style="font-size: 13px;"></ul>
+    </div>
+  </aside>
+
+  <!-- 중앙: 수신 목록 -->
+  <main id="pane-center" class="pane-scroll" style="border-right: 1px solid var(--rule);">
+    <div class="px-5 pt-4 sticky top-0 bg-paper" style="z-index: 10;">
+      <div class="flex items-end justify-between">
+        <h1 id="scope-heading"  style="font-size: 20px; font-weight: 700;">전체 새 글</h1>
+      </div>
+      <div class="rule-double" style="margin-top: 4px;"></div>
+
+      <div class="flex items-center gap-4 py-2 flex-wrap" style="font-size: 12px;">
+        <label class="flex items-center gap-1 text-ink-2">
+          정렬
+          <select id="sort-select" class="input-line" style="width: auto; padding: 2px 4px; font-size: 12px;">
+            <option value="collected">수집 시각</option>
+            <option value="published">게시 시각</option>
+            <option value="deadline">마감일</option>
+          </select>
+        </label>
+        <label class="flex items-center gap-1 text-ink-2 cursor-pointer">
+          <input type="checkbox" id="unread-only-toggle" />
+          안읽음만
+        </label>
+        <div class="flex items-center gap-1">
+          <button id="density-compact" class="btn btn-sm" data-density="compact">조밀</button>
+          <button id="density-comfortable" class="btn btn-sm" data-density="comfortable">보통</button>
+        </div>
+        <div class="flex-1"></div>
+        <button id="mark-all-read-btn" class="btn btn-sm">모두 읽음 처리</button>
+      </div>
+    </div>
+
+    <div id="item-list" class="px-5 pb-4"></div>
+
+    <div id="muted-line" class="px-5 py-3 hidden" style="font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); border-top: 1px solid var(--rule); cursor: pointer;"></div>
+  </main>
+
+  <!-- 우측: 교정지 -->
+  <aside id="pane-right" class="bg-paper-2 pane-scroll">
+    <div class="p-4">
+      <button id="pane-right-close" class="btn btn-sm mb-2" style="display: none;">닫기 ✕</button>
+      <div id="detail-empty" class="text-ink-2" style="font-size: 13px;">선택된 항목이 없습니다. j/k 로 이동하거나 목록에서 항목을 클릭하세요.</div>
+      <div id="detail-content" class="hidden"></div>
+    </div>
+  </aside>
+</div>
+
+<!-- 단축키 도움말 오버레이 -->
+<div id="shortcut-overlay">
+  <div style="background: var(--paper); border: 1px solid var(--ink); min-width: 360px; max-width: 480px;">
+    <div class="px-4 pt-4">
+      <div class="rule-double">
+        <h2  style="font-size: 18px; font-weight: 700;">단축키</h2>
+      </div>
+    </div>
+    <div class="px-4 py-3" style="font-size: 13px;">
+      <div class="flex justify-between py-1.5" style="border-bottom: 1px solid var(--rule);"><span><span class="kbd">j</span> / <span class="kbd">k</span></span><span class="text-ink-2">다음 / 이전 항목</span></div>
+      <div class="flex justify-between py-1.5" style="border-bottom: 1px solid var(--rule);"><span><span class="kbd">o</span> / <span class="kbd">Enter</span></span><span class="text-ink-2">원문 열기(읽음 처리)</span></div>
+      <div class="flex justify-between py-1.5" style="border-bottom: 1px solid var(--rule);"><span><span class="kbd">m</span></span><span class="text-ink-2">읽음/안읽음 전환</span></div>
+      <div class="flex justify-between py-1.5" style="border-bottom: 1px solid var(--rule);"><span><span class="kbd">s</span></span><span class="text-ink-2">별표 전환</span></div>
+      <div class="flex justify-between py-1.5" style="border-bottom: 1px solid var(--rule);"><span><span class="kbd">Shift</span>+<span class="kbd">A</span></span><span class="text-ink-2">범위 모두 읽음 처리</span></div>
+      <div class="flex justify-between py-1.5"><span><span class="kbd">?</span></span><span class="text-ink-2">이 도움말 열기/닫기</span></div>
+    </div>
+    <div class="px-4 pb-4 text-right">
+      <button id="close-shortcut-help" class="btn btn-sm">닫기 [Esc]</button>
+    </div>
+  </div>
+</div>
+
+<script src="./assets/mock-data.js"></script>
+<script src="./assets/shell.js"></script>
+<script src="./assets/resizable.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var MOCK = window.MOCK;
+  var Shell = window.MyPortalShell;
+  var esc = Shell.escapeHtml;
+
+  // ---------------- 패널 리사이즈 ----------------
+  if (window.MyPortalResizable) {
+    window.MyPortalResizable.init(document.getElementById('app'), {
+      storageKey: 'myportal-resize-index',
+      flexIndex: 1,
+      panes: [
+        { default: 260, min: 200, max: 420 },
+        { min: 480 },
+        { default: 400, min: 320, max: 720, responsiveDefaults: [{ minWidth: 1920, default: 480 }] }
+      ]
+    });
+  }
+
+  // ---------------- 상태 ----------------
+  var itemStates = {}; // id -> { read, starred }
+  MOCK.items.forEach(function (it) {
+    itemStates[it.id] = { read: !!it.read, starred: !!it.starred };
+  });
+
+  var categoriesById = {};
+  var childrenByParent = {};
+  MOCK.categories.forEach(function (c) {
+    categoriesById[c.id] = c;
+    var key = c.parentId || '__root__';
+    if (!childrenByParent[key]) childrenByParent[key] = [];
+    childrenByParent[key].push(c);
+  });
+
+  var sourcesById = {};
+  MOCK.sources.forEach(function (s) { sourcesById[s.id] = s; });
+
+  var clustersById = {};
+  MOCK.clusters.forEach(function (c) { clustersById[c.id] = c; });
+
+  var clusterMembers = {}; // clusterId -> [item...] (sorted by collectedAt asc)
+  MOCK.items.forEach(function (it) {
+    if (!it.clusterId) return;
+    if (!clusterMembers[it.clusterId]) clusterMembers[it.clusterId] = [];
+    clusterMembers[it.clusterId].push(it);
+  });
+  Object.keys(clusterMembers).forEach(function (cid) {
+    clusterMembers[cid].sort(function (a, b) { return new Date(a.collectedAt) - new Date(b.collectedAt); });
+  });
+
+  var treeExpanded = {};
+  MOCK.categories.forEach(function (c) { treeExpanded[c.id] = true; }); // 기본 전체 펼침
+
+  var expandedClusters = {}; // clusterId -> bool
+  var showMutedByScope = {}; // scopeKey -> bool
+
+  var state = {
+    scope: { type: 'special', id: 'all-new' },
+    density: 'comfortable', // 'compact' | 'comfortable'
+    sortBy: 'collected', // 'collected' | 'published' | 'deadline'
+    unreadOnly: false,
+    selectedId: null,
+    flatNav: [] // 현재 렌더된, j/k 로 이동 가능한 item id 순서
+  };
+
+  var lastBulk = null; // { ids: [...], prevStates: {id:{read,starred}} }
+
+  // ---------------- 유틸 ----------------
+  function now() { return new Date(MOCK.now); }
+  function lastVisit() { return new Date(MOCK.lastVisit); }
+
+  function isMuted(item) { return !!(item.ruleMatch && item.ruleMatch.action === 'mute'); }
+  function isAlert(item) { return !!(item.ruleMatch && item.ruleMatch.action === 'alert'); }
+  function isClusterRepresentative(item) {
+    if (!item.clusterId) return false;
+    var c = clustersById[item.clusterId];
+    return !!c && c.representativeItemId === item.id;
+  }
+
+  function scopeKey(scope) { return scope.type + ':' + scope.id; }
+
+  function descendantCategoryIds(catId) {
+    var out = [catId];
+    var kids = childrenByParent[catId] || [];
+    kids.forEach(function (k) { out = out.concat(descendantCategoryIds(k.id)); });
+    return out;
+  }
+
+  function categoryPathLabel(catId) {
+    var cat = categoriesById[catId];
+    if (!cat) return '';
+    if (!cat.parentId) return cat.name;
+    return categoryPathLabel(cat.parentId) + ' > ' + cat.name;
+  }
+
+  function deadlineFieldOf(source) {
+    var found = null;
+    source.fields.forEach(function (f) { if (f.role === 'deadline') found = f; });
+    return found;
+  }
+
+  function itemDeadlineDate(item) {
+    var source = sourcesById[item.sourceId];
+    if (!source) return null;
+    var f = deadlineFieldOf(source);
+    if (!f) return null;
+    var val = item.fields[f.key];
+    if (!val) return null;
+    if (f.type === 'date_range') {
+      return val.end ? new Date(val.end + 'T23:59:59+09:00') : null;
+    }
+    return new Date(val + 'T23:59:59+09:00');
+  }
+
+  function ddayInfo(deadlineDate) {
+    var diffMs = deadlineDate.getTime() - now().getTime();
+    var diffDays = Math.ceil(diffMs / 86400000);
+    var label, cls;
+    if (diffDays < 0) {
+      label = '마감';
+      cls = 'dday dday-past';
+    } else if (diffDays === 0) {
+      label = 'D-DAY';
+      cls = 'dday dday-urgent';
+    } else {
+      label = 'D-' + diffDays;
+      cls = diffDays <= 3 ? 'dday dday-urgent' : 'dday';
+    }
+    return { label: label, cls: cls };
+  }
+
+  function formatDateShort(iso) {
+    var parts = iso.split('-');
+    return parts[1] + '.' + parts[2];
+  }
+
+  function fieldValueLabel(field, value) {
+    if (value === undefined || value === null || value === '') return null;
+    switch (field.type) {
+      case 'date_range':
+        return (value.start ? formatDateShort(value.start) : '?') + '~' + (value.end ? formatDateShort(value.end) : '?');
+      case 'tag_list':
+        return Array.isArray(value) ? value.join(', ') : String(value);
+      case 'number':
+        return String(value);
+      case 'date':
+      case 'datetime':
+        return formatDateShort(value);
+      default:
+        return String(value);
+    }
+  }
+
+  function metaPairs(item, source, limit) {
+    var pairs = [];
+    source.fields.forEach(function (f) {
+      if (f.type === 'url' || f.type === 'image') return;
+      var v = fieldValueLabel(f, item.fields[f.key]);
+      if (v !== null) pairs.push({ label: f.label, value: v });
+    });
+    return limit ? pairs.slice(0, limit) : pairs;
+  }
+
+  // ---------------- 범위 판정 ----------------
+  function matchesScope(item, scope) {
+    var source = sourcesById[item.sourceId];
+    if (!source) return false;
+    if (scope.type === 'category') {
+      var ids = descendantCategoryIds(scope.id);
+      return ids.indexOf(source.categoryId) !== -1;
+    }
+    if (scope.type === 'tag') {
+      return source.tags.indexOf(scope.id) !== -1;
+    }
+    if (scope.type === 'special') {
+      if (scope.id === 'all-new') return true;
+      if (scope.id === 'kw-alert') return isAlert(item);
+      if (scope.id === 'deadline') return itemDeadlineDate(item) !== null;
+      if (scope.id === 'starred') return itemStates[item.id].starred;
+      if (scope.id === 'warn-sources') return source.status === 'warn' || source.status === 'fail';
+    }
+    return false;
+  }
+
+  function scopeHeading(scope) {
+    if (scope.type === 'special') {
+      var map = { 'all-new': '전체 새 글', 'kw-alert': '키워드 알림', deadline: '마감 임박', starred: '별표', 'warn-sources': '주의 소스' };
+      return map[scope.id] || '전체 새 글';
+    }
+    if (scope.type === 'category') return categoryPathLabel(scope.id);
+    if (scope.type === 'tag') {
+      var t = MOCK.tags.filter(function (x) { return x.id === scope.id; })[0];
+      return '#' + (t ? t.name : scope.id);
+    }
+    return '';
+  }
+
+  // ---------------- 안읽음 집계 (좌측 트리/특수 보기) ----------------
+  function categoryUnreadCount(catId) {
+    var ids = descendantCategoryIds(catId);
+    var n = 0;
+    MOCK.items.forEach(function (it) {
+      var source = sourcesById[it.sourceId];
+      if (!source || ids.indexOf(source.categoryId) === -1) return;
+      if (isMuted(it)) return;
+      if (!itemStates[it.id].read) n += 1;
+    });
+    return n;
+  }
+
+  function categoryHasWarnSource(catId) {
+    var ids = descendantCategoryIds(catId);
+    var worst = null;
+    MOCK.sources.forEach(function (s) {
+      if (ids.indexOf(s.categoryId) === -1) return;
+      if (s.status === 'fail') worst = 'fail';
+      else if (s.status === 'warn' && worst !== 'fail') worst = 'warn';
+    });
+    return worst;
+  }
+
+  function specialViewCount(id) {
+    var n = 0;
+    MOCK.items.forEach(function (it) {
+      var source = sourcesById[it.sourceId];
+      if (!source) return;
+      if (id === 'all-new') {
+        if (!isMuted(it) && !itemStates[it.id].read) n += 1;
+      } else if (id === 'kw-alert') {
+        if (isAlert(it) && !itemStates[it.id].read) n += 1;
+      } else if (id === 'deadline') {
+        var dl = itemDeadlineDate(it);
+        if (dl && dl.getTime() >= now().getTime() && !itemStates[it.id].read) n += 1;
+      } else if (id === 'starred') {
+        if (itemStates[it.id].starred) n += 1;
+      } else if (id === 'warn-sources') {
+        if ((source.status === 'warn' || source.status === 'fail') && !itemStates[it.id].read) n += 1;
+      }
+    });
+    return n;
+  }
+
+  function tagUnreadCount(tagId) {
+    var n = 0;
+    MOCK.items.forEach(function (it) {
+      var source = sourcesById[it.sourceId];
+      if (!source || source.tags.indexOf(tagId) === -1) return;
+      if (isMuted(it)) return;
+      if (!itemStates[it.id].read) n += 1;
+    });
+    return n;
+  }
+
+  // ---------------- 좌측 렌더 ----------------
+  function renderLeft() {
+    var specialDefs = [
+      { id: 'all-new', label: '전체 새 글' },
+      { id: 'kw-alert', label: '키워드 알림' },
+      { id: 'deadline', label: '마감 임박' },
+      { id: 'starred', label: '별표' },
+      { id: 'warn-sources', label: '주의 소스' }
+    ];
+    var ul = document.getElementById('special-views');
+    ul.innerHTML = specialDefs.map(function (d) {
+      var active = state.scope.type === 'special' && state.scope.id === d.id;
+      var count = specialViewCount(d.id);
+      return '<li class="flex items-center justify-between py-1 px-1 tree-node-label' + (active ? ' scope-active' : '') + '" data-scope-type="special" data-scope-id="' + d.id + '">' +
+        '<span>' + esc(d.label) + '</span>' +
+        '<span class="tree-count' + (count === 0 ? ' tree-count-zero' : '') + '">' + count + '</span>' +
+        '</li>';
+    }).join('');
+
+    var treeRoot = document.getElementById('tree-root');
+    var roots = childrenByParent['__root__'] || [];
+    treeRoot.innerHTML = roots.map(function (c) { return renderTreeNode(c, 0); }).join('');
+
+    var tagUl = document.getElementById('tag-list');
+    tagUl.innerHTML = MOCK.tags.map(function (t) {
+      var active = state.scope.type === 'tag' && state.scope.id === t.id;
+      var count = tagUnreadCount(t.id);
+      return '<li class="flex items-center justify-between py-1 px-1 tree-node-label' + (active ? ' scope-active' : '') + '" data-scope-type="tag" data-scope-id="' + t.id + '">' +
+        '<span class="text-ink-2">#' + esc(t.name) + '</span>' +
+        '<span class="tree-count' + (count === 0 ? ' tree-count-zero' : '') + '">' + count + '</span>' +
+        '</li>';
+    }).join('');
+
+    attachLeftHandlers();
+  }
+
+  function renderTreeNode(cat, depth) {
+    var kids = childrenByParent[cat.id] || [];
+    var hasKids = kids.length > 0;
+    var expanded = !!treeExpanded[cat.id];
+    var active = state.scope.type === 'category' && state.scope.id === cat.id;
+    var count = categoryUnreadCount(cat.id);
+    var warn = categoryHasWarnSource(cat.id);
+    var warnHtml = warn ? '<span class="stamp ' + (warn === 'fail' ? 'stamp-fail' : 'stamp-warn') + '" style="font-size:9px; padding:0 3px; margin-right:4px;" title="주의/실패 소스 포함">' + (warn === 'fail' ? '실패' : '주의') + '</span>' : '';
+
+    var html = '<div class="flex items-center justify-between py-1 px-1 tree-node-label' + (active ? ' scope-active' : '') + '" style="padding-left:' + (depth * 14) + 'px;" data-scope-type="category" data-scope-id="' + cat.id + '">';
+    html += '<span class="flex items-center min-w-0">';
+    if (hasKids) {
+      html += '<span class="tree-toggle" data-toggle-cat="' + cat.id + '">' + (expanded ? '▾' : '▸') + '</span>';
+    } else {
+      html += '<span class="tree-toggle"></span>';
+    }
+    html += '<span class="truncate">' + esc(cat.name) + '</span>';
+    html += '</span>';
+    html += '<span class="flex items-center shrink-0">' + warnHtml + '<span class="tree-count' + (count === 0 ? ' tree-count-zero' : '') + '">' + count + '</span></span>';
+    html += '</div>';
+
+    if (hasKids && expanded) {
+      kids.forEach(function (k) { html += renderTreeNode(k, depth + 1); });
+    }
+    return html;
+  }
+
+  function attachLeftHandlers() {
+    document.querySelectorAll('[data-toggle-cat]').forEach(function (el) {
+      el.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        var id = el.getAttribute('data-toggle-cat');
+        treeExpanded[id] = !treeExpanded[id];
+        renderLeft();
+      });
+    });
+    document.querySelectorAll('[data-scope-type]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var type = el.getAttribute('data-scope-type');
+        var id = el.getAttribute('data-scope-id');
+        state.scope = { type: type, id: id };
+        if (type === 'special' && id === 'deadline') state.sortBy = 'deadline';
+        recomputeAll();
+      });
+    });
+  }
+
+  // ---------------- 중앙 렌더 ----------------
+  function highlightTitle(item) {
+    var title = esc(item.title);
+    if (item.ruleMatch && (item.ruleMatch.action === 'alert' || item.ruleMatch.action === 'emphasize')) {
+      var rule = MOCK.keywordRules.filter(function (r) { return r.id === item.ruleMatch.ruleId; })[0];
+      if (rule) {
+        rule.keywords.forEach(function (kw) {
+          var escKw = esc(kw);
+          if (!escKw) return;
+          var re = new RegExp(escKw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+          title = title.replace(re, function (m) { return '<mark class="kw-mark">' + m + '</mark>'; });
+        });
+      }
+    }
+    return title;
+  }
+
+  function ruleTagHtml(item) {
+    if (!item.ruleMatch) return '';
+    var rule = MOCK.keywordRules.filter(function (r) { return r.id === item.ruleMatch.ruleId; })[0];
+    if (!rule) return '';
+    if (item.ruleMatch.action === 'mute') {
+      return '<span class="kw-tag" style="color:var(--ink-2); border-color:var(--ink-2);">뮤트: ' + esc(rule.name) + '</span>';
+    }
+    return '<span class="kw-tag">' + esc(rule.name) + '</span>';
+  }
+
+  function buildScopeList() {
+    var scope = state.scope;
+    var key = scopeKey(scope);
+    var showMuted = !!showMutedByScope[key];
+
+    var matched = MOCK.items.filter(function (it) { return matchesScope(it, scope); });
+    if (state.unreadOnly) {
+      matched = matched.filter(function (it) { return !itemStates[it.id].read; });
+    }
+
+    var mutedHidden = matched.filter(function (it) { return isMuted(it); }).length;
+    var visible = showMuted ? matched.slice() : matched.filter(function (it) { return !isMuted(it); });
+
+    // 대표 항목 외 묶음 구성원은 목록에서 접혀 있다 (펼친 경우 별도 처리).
+    // 단, 대표 항목이 현재 범위(카테고리/태그)에 속하지 않으면 접을 대표가 없는
+    // 것이므로 개별 항목을 그대로 보여준다 (예: 대표 기사는 'AI 기업' 소스이지만
+    // 다른 소스는 '로봇 산업' 소스인 이야기 묶음 — 로봇 산업 범위에서도 보여야 한다).
+    visible = visible.filter(function (it) {
+      if (!it.clusterId) return true;
+      var cluster = clustersById[it.clusterId];
+      if (!cluster) return true;
+      if (cluster.representativeItemId === it.id) return true;
+      var repItem = MOCK.items.filter(function (x) { return x.id === cluster.representativeItemId; })[0];
+      var repInScope = repItem && matchesScope(repItem, scope);
+      return !repInScope;
+    });
+
+    visible.sort(function (a, b) {
+      if (state.sortBy === 'published') {
+        return new Date(b.publishedAt) - new Date(a.publishedAt);
+      }
+      if (state.sortBy === 'deadline') {
+        var da = itemDeadlineDate(a);
+        var db = itemDeadlineDate(b);
+        if (!da && !db) return new Date(b.collectedAt) - new Date(a.collectedAt);
+        if (!da) return 1;
+        if (!db) return -1;
+        var aPast = da.getTime() < now().getTime();
+        var bPast = db.getTime() < now().getTime();
+        // 임박한(미래) 마감을 먼저, 지난 마감은 뒤로. 각 그룹 내에서는 마감이 가까운 순.
+        if (aPast !== bPast) return aPast ? 1 : -1;
+        return aPast ? (db - da) : (da - db);
+      }
+      return new Date(b.collectedAt) - new Date(a.collectedAt);
+    });
+
+    var newCount = 0;
+    if (state.sortBy === 'collected') {
+      visible.forEach(function (it) {
+        if (new Date(it.collectedAt) > lastVisit()) newCount += 1;
+      });
+    }
+
+    return { visible: visible, mutedHidden: mutedHidden, showMuted: showMuted, newCount: newCount, scopeKey: key };
+  }
+
+  function renderItemRow(item, opts) {
+    opts = opts || {};
+    var source = sourcesById[item.sourceId];
+    var read = itemStates[item.id].read;
+    var starred = itemStates[item.id].starred;
+    var selected = state.selectedId === item.id;
+    var rowCls = 'item-row ' + (read ? 'row-read' : 'row-new') + (selected ? ' cursor-row' : '');
+    var indentStyle = opts.indent ? ' style="padding-left:' + opts.indent + 'px;"' : '';
+
+    var timeLabel = state.sortBy === 'published' ? Shell.formatTimeHM(new Date(item.publishedAt)) : Shell.formatTimeHM(new Date(item.collectedAt));
+
+    var deadline = itemDeadlineDate(item);
+    var ddayHtml = '';
+    if (deadline) {
+      var dd = ddayInfo(deadline);
+      ddayHtml = '<span class="' + dd.cls + '" style="margin-right:6px;">' + dd.label + '</span>';
+    }
+
+    var starHtml = starred ? '<span class="text-amber" style="margin-right:4px;" title="별표">★</span>' : '';
+
+    var pairs = state.density === 'comfortable' ? metaPairs(item, source, 3) : [];
+    var metaLine = '';
+    if (pairs.length) {
+      metaLine = '<div class="font-mono text-ink-2" style="font-size:11px; padding-left:0; padding-bottom:6px;">' +
+        pairs.map(function (p) { return esc(p.label) + ' ' + esc(p.value); }).join('&nbsp;&nbsp;&nbsp;') +
+        '</div>';
+    }
+
+    var clusterHtml = '';
+    if (!opts.isChild && isClusterRepresentative(item)) {
+      var members = clusterMembers[item.clusterId] || [];
+      var otherCount = members.length - 1;
+      if (otherCount > 0) {
+        var expanded = !!expandedClusters[item.clusterId];
+        clusterHtml = '<div class="font-mono text-blue" style="font-size:11px; padding-bottom:6px; cursor:pointer;" data-cluster-toggle="' + item.clusterId + '">' +
+          (expanded ? '− 접기' : '+' + otherCount + ' 다른 출처') +
+          '</div>';
+      }
+    }
+
+    var html = '<div class="' + rowCls + '" data-item-id="' + item.id + '"' + indentStyle + '>' +
+      '<div class="flex items-baseline justify-between gap-3 py-1.5 cursor-pointer" data-row-click="' + item.id + '">' +
+        '<div class="min-w-0 flex-1 flex items-baseline">' + starHtml + ddayHtml +
+          '<span class="row-title truncate flex-1 min-w-0" style="font-size:13px;">' + highlightTitle(item) + '</span>' +
+          ruleTagHtml(item) +
+        '</div>' +
+        '<div class="shrink-0 font-mono text-ink-2" style="font-size:11px; padding-left:10px;">' + esc(source ? source.name : '') + ' · ' + timeLabel + '</div>' +
+      '</div>' +
+      metaLine +
+      clusterHtml +
+    '</div>';
+
+    return html;
+  }
+
+  function renderCenter() {
+    var scope = state.scope;
+    document.getElementById('scope-heading').textContent = scopeHeading(scope);
+    document.getElementById('sort-select').value = state.sortBy;
+    document.getElementById('unread-only-toggle').checked = state.unreadOnly;
+    document.getElementById('density-compact').classList.toggle('btn-primary', state.density === 'compact');
+    document.getElementById('density-comfortable').classList.toggle('btn-primary', state.density === 'comfortable');
+
+    var result = buildScopeList();
+    var listEl = document.getElementById('item-list');
+    var mutedEl = document.getElementById('muted-line');
+
+    var showDivider = state.sortBy === 'collected' && result.newCount > 0 && result.newCount < result.visible.length;
+    var dividerHtml = '';
+    if (showDivider) {
+      var lv = lastVisit();
+      var label = Shell.pad2(lv.getMonth() + 1) + '.' + Shell.pad2(lv.getDate()) + ' ' + Shell.formatTimeHM(lv);
+      dividerHtml = '<div style="font-family: var(--font-mono); font-size: 11px; color: var(--red); text-align: center; padding-top: 8px; padding-bottom: 8px; border-top: 1px solid var(--red); margin: 4px 0;">' +
+        '── 지난 방문 ' + label + ' 이후 ' + result.newCount + '건 ──' +
+        '</div>';
+    }
+
+    var flatNav = [];
+    var rowsHtml = '';
+
+    result.visible.forEach(function (item, idx) {
+      if (showDivider && idx === result.newCount) {
+        rowsHtml += dividerHtml;
+      }
+      rowsHtml += renderItemRow(item, {});
+      flatNav.push(item.id);
+
+      if (isClusterRepresentative(item) && expandedClusters[item.clusterId]) {
+        var members = (clusterMembers[item.clusterId] || []).filter(function (m) { return m.id !== item.id; });
+        members.forEach(function (m) {
+          rowsHtml += renderItemRow(m, { indent: 20, isChild: true });
+          flatNav.push(m.id);
+        });
+      }
+    });
+
+    listEl.innerHTML = rowsHtml || '<div class="text-ink-2 py-6" style="font-size:13px;">표시할 항목이 없습니다.</div>';
+
+    if (result.mutedHidden > 0 && !result.showMuted) {
+      mutedEl.textContent = '뮤트 ' + result.mutedHidden + '건 보기';
+      mutedEl.classList.remove('hidden');
+      mutedEl.onclick = function () { showMutedByScope[result.scopeKey] = true; recomputeAll(); };
+    } else if (result.showMuted && MOCK.items.some(function (it) { return matchesScope(it, scope) && isMuted(it); })) {
+      mutedEl.textContent = '뮤트 항목 숨기기';
+      mutedEl.classList.remove('hidden');
+      mutedEl.onclick = function () { showMutedByScope[result.scopeKey] = false; recomputeAll(); };
+    } else {
+      mutedEl.classList.add('hidden');
+    }
+
+    state.flatNav = flatNav;
+    if (!state.selectedId || flatNav.indexOf(state.selectedId) === -1) {
+      state.selectedId = flatNav.length ? flatNav[0] : null;
+    }
+
+    attachCenterHandlers();
+  }
+
+  function attachCenterHandlers() {
+    document.querySelectorAll('[data-row-click]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        state.selectedId = el.getAttribute('data-row-click');
+        recomputeAll();
+      });
+    });
+    document.querySelectorAll('[data-cluster-toggle]').forEach(function (el) {
+      el.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        var cid = el.getAttribute('data-cluster-toggle');
+        expandedClusters[cid] = !expandedClusters[cid];
+        renderCenter();
+        highlightSelection();
+      });
+    });
+    document.getElementById('sort-select').onchange = function (e) {
+      state.sortBy = e.target.value;
+      recomputeAll();
+    };
+    document.getElementById('unread-only-toggle').onchange = function (e) {
+      state.unreadOnly = e.target.checked;
+      recomputeAll();
+    };
+    document.getElementById('density-compact').onclick = function () { state.density = 'compact'; recomputeAll(); };
+    document.getElementById('density-comfortable').onclick = function () { state.density = 'comfortable'; recomputeAll(); };
+    document.getElementById('mark-all-read-btn').onclick = function () { markScopeRead(); };
+  }
+
+  function highlightSelection() {
+    document.querySelectorAll('.item-row').forEach(function (el) {
+      var id = el.getAttribute('data-item-id');
+      el.classList.toggle('cursor-row', id === state.selectedId);
+    });
+  }
+
+  // ---------------- 우측 렌더 ----------------
+  function renderRight() {
+    var empty = document.getElementById('detail-empty');
+    var content = document.getElementById('detail-content');
+    var closeBtn = document.getElementById('pane-right-close');
+    var pane = document.getElementById('pane-right');
+
+    var item = state.selectedId ? MOCK.items.filter(function (it) { return it.id === state.selectedId; })[0] : null;
+
+    if (!item) {
+      empty.classList.remove('hidden');
+      content.classList.add('hidden');
+      pane.classList.remove('drawer-open');
+      return;
+    }
+
+    empty.classList.add('hidden');
+    content.classList.remove('hidden');
+    pane.classList.add('drawer-open');
+
+    var source = sourcesById[item.sourceId];
+    var read = itemStates[item.id].read;
+    var starred = itemStates[item.id].starred;
+
+    var allPairs = metaPairs(item, source, null);
+    var deadline = itemDeadlineDate(item);
+
+    var fieldsRows = allPairs.map(function (p) {
+      return '<tr><td class="text-ink-2 pr-3 py-1 align-top font-mono" style="font-size:11px; white-space:nowrap;">' + esc(p.label) + '</td><td class="py-1" style="font-size:12px;">' + esc(p.value) + '</td></tr>';
+    }).join('');
+
+    var tagsHtml = source.tags.map(function (tid) {
+      var t = MOCK.tags.filter(function (x) { return x.id === tid; })[0];
+      return t ? '<span class="kw-tag" style="color:var(--ink-2); border-color:var(--ink-2);">#' + esc(t.name) + '</span>' : '';
+    }).join(' ');
+
+    var statusStamp = '<span class="stamp ' + MOCK.statusStampClass[source.status] + '">' + esc(MOCK.statusLabels[source.status]) + '</span>';
+
+    content.innerHTML =
+      '<div class="mb-3">' +
+        (deadline ? '<span class="' + ddayInfo(deadline).cls + '" style="margin-right:6px;">' + ddayInfo(deadline).label + '</span>' : '') +
+        (starred ? '<span class="text-amber" title="별표">★</span>' : '') +
+      '</div>' +
+      '<h2  style="font-size:15px; font-weight:700; line-height:1.4;">' + esc(item.title) + '</h2>' +
+      '<div class="font-mono text-ink-2 mt-2" style="font-size:11px;">' + esc(source.name) + ' ' + statusStamp + '<br/>게시 ' + esc(item.publishedAt.slice(0, 16).replace('T', ' ')) + ' · 수집 ' + esc(item.collectedAt.slice(0, 16).replace('T', ' ')) + '</div>' +
+      (fieldsRows ? '<table class="w-full mt-3" style="border-top:1px solid var(--rule);"><tbody>' + fieldsRows + '</tbody></table>' : '') +
+      '<p class="mt-3" style="font-size:13px; line-height:1.6;">' + esc(item.excerpt) + '</p>' +
+      '<div class="flex items-center gap-2 mt-4 flex-wrap">' +
+        '<button id="btn-open" class="btn btn-sm">원문 열기 [o]</button>' +
+        '<button id="btn-toggle-read" class="btn btn-sm">' + (read ? '안읽음으로 표시 [m]' : '읽음 표시 [m]') + '</button>' +
+        '<button id="btn-toggle-star" class="btn btn-sm">' + (starred ? '별표 해제 [s]' : '별표 [s]') + '</button>' +
+      '</div>' +
+      '<div class="mt-3">' + tagsHtml + '</div>' +
+      '<div class="font-mono text-ink-2 mt-3 truncate" style="font-size:10px;" title="' + esc(item.url) + '">' + esc(item.url) + '</div>';
+
+    document.getElementById('btn-open').onclick = function () { openItem(item.id); };
+    document.getElementById('btn-toggle-read').onclick = function () { toggleRead(item.id); };
+    document.getElementById('btn-toggle-star').onclick = function () { toggleStar(item.id); };
+
+    closeBtn.onclick = function () { pane.classList.remove('drawer-open'); };
+  }
+
+  // ---------------- 상태 변경 액션 ----------------
+  function clusterSiblingIds(itemId) {
+    var item = MOCK.items.filter(function (it) { return it.id === itemId; })[0];
+    if (!item || !item.clusterId) return [itemId];
+    return (clusterMembers[item.clusterId] || []).map(function (m) { return m.id; });
+  }
+
+  function toggleRead(itemId) {
+    var ids = clusterSiblingIds(itemId);
+    var target = !itemStates[itemId].read;
+    ids.forEach(function (id) { itemStates[id].read = target; });
+    recomputeAll();
+  }
+
+  function toggleStar(itemId) {
+    itemStates[itemId].starred = !itemStates[itemId].starred;
+    recomputeAll();
+  }
+
+  function openItem(itemId) {
+    var ids = clusterSiblingIds(itemId);
+    ids.forEach(function (id) { itemStates[id].read = true; });
+    recomputeAll();
+    Shell.showToast('원문을 새 탭으로 엽니다');
+  }
+
+  function markScopeRead() {
+    var scope = state.scope;
+    var targets = MOCK.items.filter(function (it) { return matchesScope(it, scope) && !itemStates[it.id].read; });
+    if (!targets.length) return;
+    var prevStates = {};
+    targets.forEach(function (it) { prevStates[it.id] = { read: itemStates[it.id].read, starred: itemStates[it.id].starred }; });
+    targets.forEach(function (it) { itemStates[it.id].read = true; });
+    lastBulk = { ids: targets.map(function (it) { return it.id; }), prevStates: prevStates };
+    recomputeAll();
+    Shell.showUndoBand(targets.length + '건 읽음 처리했습니다', undoLastBulk, 5000);
+  }
+
+  function undoLastBulk() {
+    if (!lastBulk) return;
+    lastBulk.ids.forEach(function (id) {
+      if (lastBulk.prevStates[id]) itemStates[id].read = lastBulk.prevStates[id].read;
+    });
+    lastBulk = null;
+    recomputeAll();
+  }
+
+  // ---------------- 재계산/렌더 ----------------
+  function recomputeAll() {
+    renderLeft();
+    renderCenter();
+    renderRight();
+    highlightSelection();
+  }
+
+  // ---------------- 키보드 ----------------
+  function moveCursor(delta) {
+    if (!state.flatNav.length) return;
+    var idx = state.flatNav.indexOf(state.selectedId);
+    if (idx === -1) idx = 0;
+    else idx = Math.min(state.flatNav.length - 1, Math.max(0, idx + delta));
+    state.selectedId = state.flatNav[idx];
+    renderRight();
+    highlightSelection();
+    var el = document.querySelector('[data-item-id="' + state.selectedId + '"]');
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+  }
+
+  function toggleShortcutHelp(show) {
+    var el = document.getElementById('shortcut-overlay');
+    if (show === undefined) show = !el.classList.contains('show');
+    el.classList.toggle('show', show);
+  }
+
+  document.addEventListener('keydown', function (ev) {
+    var tag = (ev.target && ev.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+    if (ev.key === '?') {
+      ev.preventDefault();
+      toggleShortcutHelp();
+      return;
+    }
+    if (ev.key === 'Escape') {
+      toggleShortcutHelp(false);
+      return;
+    }
+    if (document.getElementById('shortcut-overlay').classList.contains('show')) return;
+
+    if (ev.key === 'j') { ev.preventDefault(); moveCursor(1); return; }
+    if (ev.key === 'k') { ev.preventDefault(); moveCursor(-1); return; }
+    if (ev.key === 'm') { if (state.selectedId) { ev.preventDefault(); toggleRead(state.selectedId); } return; }
+    if (ev.key === 's') { if (state.selectedId) { ev.preventDefault(); toggleStar(state.selectedId); } return; }
+    if (ev.key === 'o' || ev.key === 'Enter') { if (state.selectedId) { ev.preventDefault(); openItem(state.selectedId); } return; }
+    if (ev.key === 'A' && ev.shiftKey) { ev.preventDefault(); markScopeRead(); return; }
+  });
+
+  document.getElementById('close-shortcut-help').addEventListener('click', function () { toggleShortcutHelp(false); });
+  document.getElementById('shortcut-overlay').addEventListener('click', function (ev) {
+    if (ev.target.id === 'shortcut-overlay') toggleShortcutHelp(false);
+  });
+
+  // ---------------- 초기 렌더 ----------------
+  recomputeAll();
+})();
+</script>
+</body>
+</html>

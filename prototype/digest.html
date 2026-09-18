@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>myportal — 다이제스트 설정</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="./assets/tailwind-config.js"></script>
+<link rel="stylesheet" href="./assets/tokens.css" />
+<style>
+  #app {
+    display: grid;
+    grid-template-columns: var(--pane-0-width, 380px) minmax(640px, 1fr);
+    height: calc(100vh - 44px);
+  }
+  @media (max-width: 1099px) {
+    #app { grid-template-columns: 1fr; height: auto; }
+  }
+  .pane-scroll { overflow-y: auto; height: 100%; }
+
+  .field-label { font-size: 11px; letter-spacing: 0.03em; color: var(--ink-2); margin-bottom: 4px; margin-top: 16px; }
+  .field-label:first-child { margin-top: 0; }
+
+  .toggle-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+
+  .hist-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .hist-table th { text-align: left; color: var(--ink-2); font-weight: 500; font-size: 11px; border-bottom: 1px solid var(--ink); padding: 4px 6px 4px 0; }
+  .hist-table td { border-bottom: 1px solid var(--rule); padding: 5px 6px 5px 0; }
+  .hist-table td.num, .hist-table th.num { font-family: var(--font-mono); }
+
+  /* 이메일 미리보기: 신문 1면 축소판 */
+  .email-frame {
+    width: 640px;
+    max-width: 100%;
+    background: var(--paper);
+    border: 1px solid var(--ink);
+    margin: 0 auto;
+  }
+  .email-masthead {
+    border-bottom: 3px double var(--ink);
+    padding: 14px 20px 10px;
+    text-align: center;
+  }
+  .email-section-head {
+    border-bottom: 2px solid var(--ink);
+    padding: 14px 20px 4px;
+    margin-top: 10px;
+  }
+  .email-section-head:first-of-type { margin-top: 0; }
+  .email-item {
+    padding: 8px 20px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .email-item:last-child { border-bottom: none; }
+  .email-link { color: var(--blue); cursor: pointer; text-decoration: underline; }
+  .email-footer {
+    border-top: 2px solid var(--ink);
+    padding: 12px 20px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--ink-2);
+  }
+  .email-disabled-note {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--ink-2);
+    font-size: 13px;
+  }
+</style>
+</head>
+<body data-active-page="digest" class="bg-paper text-ink font-sans">
+<header id="masthead" style="height: 44px;"></header>
+
+<div id="app">
+  <!-- 좌측: 설정 서식 -->
+  <aside id="pane-left" class="bg-paper-2 pane-scroll" style="border-right: 1px solid var(--rule);">
+    <div class="p-4" style="max-width: 380px;">
+      <h1  style="font-size: 18px; font-weight: 700;">다이제스트 설정</h1>
+
+      <label class="toggle-row mt-3">
+        <input type="checkbox" id="f-enabled" checked />
+        <span style="font-size: 13px; font-weight: 500;">다이제스트 사용</span>
+      </label>
+
+      <div class="field-label">발송 주기</div>
+      <div class="flex items-center gap-3">
+        <label class="flex items-center gap-1" style="font-size: 13px;">
+          <input type="radio" name="freq" id="f-freq-daily" value="daily" checked /> 매일
+        </label>
+        <label class="flex items-center gap-1" style="font-size: 13px;">
+          <input type="radio" name="freq" id="f-freq-weekly" value="weekly" /> 매주
+        </label>
+        <select id="f-weekday" class="input-line hidden" style="width: auto; padding: 4px 6px; font-size: 12px;"></select>
+      </div>
+
+      <div class="field-label">발송 시각</div>
+      <input id="f-time" type="time" class="input-line" style="width: auto;" value="07:30" />
+
+      <div class="field-label">시간대</div>
+      <div class="font-mono text-ink-2" style="font-size: 12px;">Asia/Seoul (고정)</div>
+
+      <div class="field-label">포함 카테고리</div>
+      <div id="cat-checkboxes" style="font-size: 13px;"></div>
+
+      <div class="field-label">항목 수 상한</div>
+      <input id="f-limit" type="number" min="1" max="50" value="10" class="input-line" style="width: 80px;" />
+
+      <div class="field-label">수신 이메일</div>
+      <div class="font-mono" style="font-size: 13px;">t***@gmail.com</div>
+
+      <div class="field-label">발송 이력</div>
+      <table class="hist-table">
+        <thead><tr><th>날짜</th><th class="num">항목 수</th><th>결과</th></tr></thead>
+        <tbody id="hist-body"></tbody>
+      </table>
+    </div>
+  </aside>
+
+  <!-- 우측: 이메일 미리보기 -->
+  <main class="pane-scroll bg-paper-2">
+    <div class="px-6 py-6">
+      <div class="text-ink-2 mb-3" style="font-size: 12px;">이메일 미리보기 — 설정을 바꾸면 즉시 반영됩니다.</div>
+      <div class="email-frame" id="email-preview"></div>
+    </div>
+  </main>
+</div>
+
+<script src="./assets/mock-data.js"></script>
+<script src="./assets/shell.js"></script>
+<script src="./assets/resizable.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var MOCK = window.MOCK;
+  var Shell = window.MyPortalShell;
+  var esc = Shell.escapeHtml;
+  var WEEKDAY = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
+
+  // ---------------- 패널 리사이즈 ----------------
+  if (window.MyPortalResizable) {
+    window.MyPortalResizable.init(document.getElementById('app'), {
+      storageKey: 'myportal-resize-digest',
+      flexIndex: 1,
+      panes: [
+        { default: 380, min: 300, max: 600 },
+        { min: 640 }
+      ]
+    });
+  }
+
+  // ---------------- 조회 헬퍼 ----------------
+  var categoriesById = {};
+  var childrenByParent = {};
+  MOCK.categories.forEach(function (c) {
+    categoriesById[c.id] = c;
+    var key = c.parentId || '__root__';
+    if (!childrenByParent[key]) childrenByParent[key] = [];
+    childrenByParent[key].push(c);
+  });
+  function descendantCategoryIds(catId) {
+    var out = [catId];
+    var kids = childrenByParent[catId] || [];
+    kids.forEach(function (k) { out = out.concat(descendantCategoryIds(k.id)); });
+    return out;
+  }
+  var topCategories = childrenByParent['__root__'] || [];
+
+  var sourcesById = {};
+  MOCK.sources.forEach(function (s) { sourcesById[s.id] = s; });
+
+  function isAlert(item) { return !!(item.ruleMatch && item.ruleMatch.action === 'alert'); }
+
+  function deadlineFieldOf(source) {
+    var found = null;
+    source.fields.forEach(function (f) { if (f.role === 'deadline') found = f; });
+    return found;
+  }
+  function itemDeadlineDate(item) {
+    var source = sourcesById[item.sourceId];
+    if (!source) return null;
+    var f = deadlineFieldOf(source);
+    if (!f) return null;
+    var val = item.fields[f.key];
+    if (!val) return null;
+    if (f.type === 'date_range') return val.end ? new Date(val.end + 'T23:59:59+09:00') : null;
+    return new Date(val + 'T23:59:59+09:00');
+  }
+  function now() { return new Date(MOCK.now); }
+  function ddayLabel(deadlineDate) {
+    var diffDays = Math.ceil((deadlineDate.getTime() - now().getTime()) / 86400000);
+    if (diffDays < 0) return { label: '마감', cls: 'dday dday-past' };
+    if (diffDays === 0) return { label: 'D-DAY', cls: 'dday dday-urgent' };
+    return { label: 'D-' + diffDays, cls: diffDays <= 3 ? 'dday dday-urgent' : 'dday' };
+  }
+  function cutoffDays(n) { return new Date(now().getTime() - n * 86400000); }
+
+  // ---------------- 발송 이력 (목업, 고정) ----------------
+  var history = [
+    { date: '2026-09-17', count: 32, result: 'ok' },
+    { date: '2026-09-16', count: 0, result: 'skipped' },
+    { date: '2026-09-15', count: 41, result: 'ok' },
+    { date: '2026-09-14', count: 0, result: 'fail' },
+    { date: '2026-09-13', count: 27, result: 'ok' }
+  ];
+  var RESULT_LABEL = { ok: '성공', fail: '실패', skipped: '미발송 (새 항목 없음)' };
+  var RESULT_STAMP = { ok: 'stamp-ok', fail: 'stamp-fail', skipped: 'stamp-pause' };
+
+  function renderHistory() {
+    document.getElementById('hist-body').innerHTML = history.map(function (h) {
+      return '<tr>' +
+        '<td class="font-mono">' + h.date.slice(5).replace('-', '.') + '</td>' +
+        '<td class="num">' + h.count + '</td>' +
+        '<td><span class="stamp ' + RESULT_STAMP[h.result] + '">' + esc(RESULT_LABEL[h.result]) + '</span></td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  // ---------------- 카테고리 체크박스 ----------------
+  var checkedCategories = {};
+  topCategories.forEach(function (c) { checkedCategories[c.id] = c.id !== 'cat-uncat'; });
+
+  function renderCategoryCheckboxes() {
+    document.getElementById('cat-checkboxes').innerHTML = topCategories.map(function (c) {
+      var checked = checkedCategories[c.id];
+      return '<label class="flex items-center gap-2 py-0.5" style="cursor:pointer;">' +
+        '<input type="checkbox" data-cat-check="' + c.id + '"' + (checked ? ' checked' : '') + ' />' +
+        '<span>' + esc(c.name) + '</span>' +
+      '</label>';
+    }).join('');
+    document.querySelectorAll('[data-cat-check]').forEach(function (el) {
+      el.addEventListener('change', function () {
+        checkedCategories[el.getAttribute('data-cat-check')] = el.checked;
+        renderPreview();
+      });
+    });
+  }
+
+  // ---------------- 요일 select ----------------
+  function renderWeekdaySelect() {
+    var sel = document.getElementById('f-weekday');
+    sel.innerHTML = WEEKDAY.map(function (w, idx) { return '<option value="' + idx + '"' + (idx === 5 ? ' selected' : '') + '>' + w + '</option>'; }).join('');
+  }
+
+  // ---------------- 이메일 미리보기 렌더 ----------------
+  function formatMastheadDate(date) {
+    return date.getFullYear() + '년 ' + (date.getMonth() + 1) + '월 ' + date.getDate() + '일';
+  }
+
+  function mockLink(label) {
+    return '<span class="email-link" data-mock-link="' + esc(label) + '">' + esc(label) + '</span>';
+  }
+
+  function buildAlertSection(limit) {
+    var cutoff = cutoffDays(7);
+    var items = MOCK.items
+      .filter(function (it) { return isAlert(it) && new Date(it.collectedAt) >= cutoff; })
+      .sort(function (a, b) { return new Date(b.collectedAt) - new Date(a.collectedAt); })
+      .slice(0, limit);
+    if (!items.length) return '<div class="email-item text-ink-2" style="font-size:12px;">최근 알림 키워드에 걸린 항목이 없습니다.</div>';
+    return items.map(function (it) {
+      var source = sourcesById[it.sourceId];
+      return '<div class="email-item">' +
+        '<div style="font-size:13px; font-weight:500;">' + esc(it.title) + '</div>' +
+        '<div class="font-mono text-ink-2 mt-1" style="font-size:11px;">' + esc(source.name) + ' · ' + it.collectedAt.slice(11, 16) + '</div>' +
+        '<div class="mt-1" style="font-size:11px;">' + mockLink('원문 보기') + ' &nbsp;·&nbsp; ' + mockLink('포털에서 보기') + '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function buildDeadlineSection(limit) {
+    var items = MOCK.items
+      .map(function (it) { return { it: it, dl: itemDeadlineDate(it) }; })
+      .filter(function (x) { return x.dl && x.dl.getTime() >= now().getTime() && (x.dl.getTime() - now().getTime()) <= 7 * 86400000; })
+      .sort(function (a, b) { return a.dl - b.dl; })
+      .slice(0, limit);
+    if (!items.length) return '<div class="email-item text-ink-2" style="font-size:12px;">7일 이내 마감되는 공고가 없습니다.</div>';
+    return items.map(function (x) {
+      var source = sourcesById[x.it.sourceId];
+      var dd = ddayLabel(x.dl);
+      return '<div class="email-item">' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="' + dd.cls + '">' + dd.label + '</span>' +
+          '<span style="font-size:13px; font-weight:500;">' + esc(x.it.title) + '</span>' +
+        '</div>' +
+        '<div class="font-mono text-ink-2 mt-1" style="font-size:11px;">' + esc(source.name) + '</div>' +
+        '<div class="mt-1" style="font-size:11px;">' + mockLink('원문 보기') + ' &nbsp;·&nbsp; ' + mockLink('포털에서 보기') + '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function buildCategorySection(limit) {
+    var cutoff = cutoffDays(7);
+    var activeCats = topCategories.filter(function (c) { return checkedCategories[c.id]; });
+    if (!activeCats.length) return '<div class="email-item text-ink-2" style="font-size:12px;">선택된 카테고리가 없습니다.</div>';
+
+    return activeCats.map(function (cat) {
+      var ids = descendantCategoryIds(cat.id);
+      var items = MOCK.items
+        .filter(function (it) {
+          var s = sourcesById[it.sourceId];
+          return s && ids.indexOf(s.categoryId) !== -1 && new Date(it.collectedAt) >= cutoff;
+        })
+        .sort(function (a, b) { return new Date(b.collectedAt) - new Date(a.collectedAt); });
+      var top = items.slice(0, Math.min(3, limit));
+      var topHtml = top.map(function (it) {
+        return '<div class="mt-1" style="font-size:12px;">· ' + esc(it.title) + ' ' + mockLink('보기') + '</div>';
+      }).join('');
+      return '<div class="email-item">' +
+        '<div class="flex items-baseline justify-between">' +
+          '<span style="font-size:13px; font-weight:500;">' + esc(cat.name) + '</span>' +
+          '<span class="font-mono text-red" style="font-size:12px;">' + items.length + '건</span>' +
+        '</div>' +
+        (topHtml || '<div class="text-ink-2 mt-1" style="font-size:12px;">새 글 없음</div>') +
+      '</div>';
+    }).join('');
+  }
+
+  function buildWarnSection() {
+    var warnSources = MOCK.sources.filter(function (s) { return s.status === 'warn' || s.status === 'fail'; });
+    if (!warnSources.length) return '<div class="email-item text-ink-2" style="font-size:12px;">주의가 필요한 소스가 없습니다.</div>';
+    return warnSources.map(function (s) {
+      return '<div class="email-item flex items-center justify-between">' +
+        '<span style="font-size:13px;">' + esc(s.name) + '</span>' +
+        '<span class="stamp ' + MOCK.statusStampClass[s.status] + '">' + esc(MOCK.statusLabels[s.status]) + '</span>' +
+      '</div>';
+    }).join('');
+  }
+
+  function renderPreview() {
+    var frame = document.getElementById('email-preview');
+    var enabled = document.getElementById('f-enabled').checked;
+    var limit = Math.max(1, Math.min(50, parseInt(document.getElementById('f-limit').value, 10) || 10));
+
+    if (!enabled) {
+      frame.innerHTML =
+        '<div class="email-masthead"><div  style="font-size:22px; font-weight:700;">myportal 조간</div></div>' +
+        '<div class="email-disabled-note">다이제스트 사용이 꺼져 있습니다. 이메일이 발송되지 않습니다.</div>';
+      return;
+    }
+
+    var dateLabel = formatMastheadDate(now());
+
+    frame.innerHTML =
+      '<div class="email-masthead">' +
+        '<div  style="font-size:22px; font-weight:700;">myportal 조간</div>' +
+        '<div class="font-mono text-ink-2 mt-1" style="font-size:11px;">' + esc(dateLabel) + '</div>' +
+      '</div>' +
+
+      '<div class="email-section-head"><span  style="font-size:14px; font-weight:700;">① 키워드 알림</span></div>' +
+      buildAlertSection(limit) +
+
+      '<div class="email-section-head"><span  style="font-size:14px; font-weight:700;">② 마감 임박 공고 (D-7 이내)</span></div>' +
+      buildDeadlineSection(limit) +
+
+      '<div class="email-section-head"><span  style="font-size:14px; font-weight:700;">③ 카테고리별 새 글</span></div>' +
+      buildCategorySection(limit) +
+
+      '<div class="email-section-head"><span  style="font-size:14px; font-weight:700;">④ 주의 소스 안내</span></div>' +
+      buildWarnSection() +
+
+      '<div class="email-footer">' +
+        't***@gmail.com 로 발송됨 · ' + mockLink('수신 거부') +
+      '</div>';
+
+    document.querySelectorAll('[data-mock-link]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var label = el.getAttribute('data-mock-link');
+        Shell.showToast(label === '수신 거부' ? '실제 서비스에서는 여기서 다이제스트 수신을 거부합니다' : '실제 서비스에서는 새 탭으로 엽니다');
+      });
+    });
+  }
+
+  // ---------------- 이벤트 바인딩 ----------------
+  document.getElementById('f-enabled').addEventListener('change', renderPreview);
+  document.getElementById('f-limit').addEventListener('input', renderPreview);
+  document.getElementById('f-time').addEventListener('change', function () { Shell.showToast('발송 시각을 ' + document.getElementById('f-time').value + '로 저장했습니다'); });
+
+  document.getElementById('f-freq-daily').addEventListener('change', function () {
+    document.getElementById('f-weekday').classList.add('hidden');
+  });
+  document.getElementById('f-freq-weekly').addEventListener('change', function () {
+    document.getElementById('f-weekday').classList.remove('hidden');
+  });
+
+  // ---------------- 초기화 ----------------
+  renderHistory();
+  renderCategoryCheckboxes();
+  renderWeekdaySelect();
+  renderPreview();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>myportal — 소스 상세</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="./assets/tailwind-config.js"></script>
+<link rel="stylesheet" href="./assets/tokens.css" />
+<style>
+  #content { max-width: 1200px; margin: 0 auto; padding-bottom: 48px; }
+  .section-block { margin-top: 30px; }
+  table.meta-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.meta-table th {
+    text-align: left; font-size: 10px; letter-spacing: 0.04em; color: var(--ink-2);
+    font-weight: 500; padding: 5px 8px; border-bottom: 2px solid var(--ink);
+  }
+  table.meta-table td { padding: 6px 8px; border-bottom: 1px solid var(--rule); }
+  .version-row { cursor: pointer; }
+  .version-row:hover { background: var(--paper-2); }
+  .version-row.active-sel { background: var(--paper-2); }
+  pre.spec-json {
+    background: var(--paper-2);
+    border: 1px solid var(--rule);
+    padding: 12px;
+    /* JSON 들여쓰기 정렬을 위해 코드 블록만 고정폭 글꼴을 쓴다 */
+    font-family: var(--font-code);
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-x: auto;
+    max-height: 360px;
+    overflow-y: auto;
+  }
+  .log-note { font-family: var(--font-mono); font-size: 11px; color: var(--ink-2); }
+</style>
+</head>
+<body data-active-page="sources" class="bg-paper text-ink font-sans">
+<header id="masthead" style="height: 44px;"></header>
+
+<div id="content" class="px-6 py-5">
+  <div id="not-found" class="hidden text-ink-2" style="font-size:13px;">소스를 찾을 수 없습니다. <a href="sources.html" style="color:var(--blue); text-decoration:underline;">소스 목록으로</a></div>
+
+  <div id="detail-root">
+    <div class="flex items-start justify-between flex-wrap gap-3">
+      <div>
+        <h1  id="source-name" style="font-size:22px; font-weight:700;"></h1>
+        <div class="font-mono text-ink-2 mt-1" id="source-url" style="font-size:12px;"></div>
+        <div class="flex items-center gap-2 mt-2" id="source-badges"></div>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="collect-now-btn" class="btn">지금 수집</button>
+        <button id="rebuild-spec-btn" class="btn">명세 다시 만들기</button>
+      </div>
+    </div>
+    <div id="action-log" class="mt-2"></div>
+
+    <div class="rule-double" style="margin-top:18px;"></div>
+
+    <div class="section-block">
+      <div  style="font-size:15px; font-weight:700; margin-bottom:8px;">필드 메타</div>
+      <table class="meta-table">
+        <thead><tr><th>키</th><th>표시명</th><th>타입</th><th>역할</th><th>순서</th><th>표시</th></tr></thead>
+        <tbody id="fields-body"></tbody>
+      </table>
+    </div>
+
+    <div class="rule-double" style="margin-top:30px;"></div>
+
+    <div class="section-block">
+      <div  style="font-size:15px; font-weight:700; margin-bottom:8px;">추출 명세 버전 이력</div>
+      <table class="meta-table">
+        <thead><tr><th>버전</th><th>생성 방식</th><th>생성일</th><th>활성</th></tr></thead>
+        <tbody id="versions-body"></tbody>
+      </table>
+      <pre class="spec-json mt-3" id="spec-json"></pre>
+    </div>
+
+    <div class="rule-double" style="margin-top:30px;"></div>
+
+    <div class="section-block">
+      <div  style="font-size:15px; font-weight:700; margin-bottom:8px;">수집 실행 로그</div>
+      <table class="meta-table">
+        <thead><tr><th>시각</th><th>방식</th><th>소요</th><th>신규</th><th>결과</th></tr></thead>
+        <tbody id="runs-body"></tbody>
+      </table>
+    </div>
+
+    <div class="rule-double" style="margin-top:30px;"></div>
+
+    <div class="section-block">
+      <div  style="font-size:15px; font-weight:700; margin-bottom:8px;">최근 항목</div>
+      <div id="recent-items"></div>
+    </div>
+  </div>
+</div>
+
+<script src="./assets/mock-data.js"></script>
+<script src="./assets/shell.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var MOCK = window.MOCK;
+  var Shell = window.MyPortalShell;
+  var esc = Shell.escapeHtml;
+
+  function getParam(name) {
+    var m = new RegExp('[?&]' + name + '=([^&]*)').exec(window.location.search);
+    return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : null;
+  }
+
+  var sourcesById = {};
+  MOCK.sources.forEach(function (s) { sourcesById[s.id] = s; });
+
+  var id = getParam('id');
+  var source = (id && sourcesById[id]) || MOCK.sources[0];
+
+  if (!source) {
+    document.getElementById('not-found').classList.remove('hidden');
+    document.getElementById('detail-root').classList.add('hidden');
+    return;
+  }
+
+  var categoriesById = {};
+  MOCK.categories.forEach(function (c) { categoriesById[c.id] = c; });
+  function categoryPathLabel(catId) {
+    var cat = categoriesById[catId];
+    if (!cat) return '미분류';
+    if (!cat.parentId) return cat.name;
+    return categoryPathLabel(cat.parentId) + ' › ' + cat.name;
+  }
+
+  function intervalLabel(min) {
+    if (min < 60) return min + '분';
+    if (min % 60 === 0) return (min / 60) + '시간';
+    return (min / 60).toFixed(1) + '시간';
+  }
+
+  // ---------------- 머리 ----------------
+  document.getElementById('source-name').textContent = source.name;
+  document.getElementById('source-url').textContent = source.url;
+  document.getElementById('source-badges').innerHTML =
+    '<span class="stamp ' + MOCK.statusStampClass[source.status] + '">' + esc(MOCK.statusLabels[source.status]) + '</span>' +
+    '<span class="section-note">' + esc(categoryPathLabel(source.categoryId)) + '</span>' +
+    '<span class="section-note font-mono">' + esc(MOCK.fetchStrategyLabels[source.fetchStrategy] || source.fetchStrategy) + ' · ' + intervalLabel(source.interval) + ' 주기</span>';
+  document.querySelectorAll('#source-badges .section-note').forEach(function (el) { el.style.fontSize = '11px'; el.style.color = 'var(--ink-2)'; });
+
+  // ---------------- 필드 메타 ----------------
+  var COMMON_FIELDS = [
+    { key: 'title', label: '제목', type: 'text', role: '제목', order: 1, show: true, fixed: true },
+    { key: 'url', label: '링크', type: 'url', role: '링크', order: 2, show: true, fixed: true },
+    { key: 'published_at', label: '게시일', type: 'datetime', role: '게시일', order: 3, show: true, fixed: true },
+    { key: 'excerpt', label: '발췌', type: 'text', role: '요약', order: 4, show: true, fixed: true }
+  ];
+  var ROLE_LABEL = { deadline: '마감일' };
+  var customFields = source.fields.map(function (f, i) {
+    return { key: f.key, label: f.label, type: f.type, role: f.role ? (ROLE_LABEL[f.role] || f.role) : '없음', order: 5 + i, show: true, fixed: false };
+  });
+  var allFields = COMMON_FIELDS.concat(customFields);
+
+  document.getElementById('fields-body').innerHTML = allFields.map(function (f) {
+    return '<tr>' +
+      '<td class="font-mono">' + esc(f.key) + '</td>' +
+      '<td>' + esc(f.label) + (f.fixed ? ' <span class="section-note">(고정)</span>' : '') + '</td>' +
+      '<td class="font-mono">' + esc(MOCK.fieldTypeLabels[f.type] || f.type) + '</td>' +
+      '<td>' + esc(f.role) + '</td>' +
+      '<td class="font-mono">' + f.order + '</td>' +
+      '<td>' + (f.show ? '표시' : '숨김') + '</td>' +
+    '</tr>';
+  }).join('');
+
+  // ---------------- 추출 명세 버전 이력 (목업 생성) ----------------
+  function buildSpecJson(versionNum) {
+    var fields = [
+      { key: 'title', selector: '.list-item .title a', attr: 'text', type: 'text', transform: ['trim'] },
+      { key: 'url', selector: '.list-item .title a', attr: 'href', type: 'url', transform: ['toAbsoluteUrl'] },
+      { key: 'published_at', selector: '.list-item .date', attr: 'text', type: 'date', transform: ['trim', 'parseDate'] }
+    ];
+    source.fields.forEach(function (f) {
+      fields.push({ key: f.key, selector: '.list-item .' + f.key, attr: 'text', type: f.type, transform: f.type === 'date_range' ? ['trim', 'parseDateRange'] : ['trim'] });
+    });
+    return JSON.stringify({
+      version: versionNum,
+      itemSelector: '.board-list .list-item',
+      fields: fields
+    }, null, 2);
+  }
+
+  var versions = [
+    { v: 3, method: 'LLM', createdAt: source.lastSuccess, active: true },
+    { v: 2, method: '자동복구', createdAt: '2026-09-08T10:00:00+09:00', active: false },
+    { v: 1, method: 'LLM', createdAt: '2026-08-15T09:30:00+09:00', active: false }
+  ];
+
+  var versionsBody = document.getElementById('versions-body');
+  var specJsonEl = document.getElementById('spec-json');
+
+  function renderVersions(selectedV) {
+    versionsBody.innerHTML = versions.map(function (ver) {
+      var sel = ver.v === selectedV ? ' active-sel' : '';
+      return '<tr class="version-row' + sel + '" data-v="' + ver.v + '">' +
+        '<td class="font-mono">v' + ver.v + '</td>' +
+        '<td>' + esc(ver.method) + '</td>' +
+        '<td class="font-mono">' + ver.createdAt.slice(0, 16).replace('T', ' ') + '</td>' +
+        '<td>' + (ver.active ? '<span class="stamp stamp-ok">활성</span>' : '') + '</td>' +
+      '</tr>';
+    }).join('');
+    specJsonEl.textContent = buildSpecJson(selectedV);
+    versionsBody.querySelectorAll('.version-row').forEach(function (tr) {
+      tr.addEventListener('click', function () { renderVersions(Number(tr.getAttribute('data-v'))); });
+    });
+  }
+  renderVersions(versions[0].v);
+
+  // ---------------- 수집 실행 로그 (목업 생성) ----------------
+  var runs = [];
+  (function buildRuns() {
+    var base = new Date(source.lastSuccess);
+    for (var i = 0; i < 8; i++) {
+      var t = new Date(base.getTime() - i * source.interval * 60000);
+      var isFail = source.status === 'fail' && i < 2;
+      runs.push({
+        time: t,
+        method: MOCK.fetchStrategyLabels[source.fetchStrategy] || source.fetchStrategy,
+        durationMs: 600 + Math.floor(((i * 137) % 900)),
+        newCount: isFail ? 0 : Math.max(0, Math.round(source.new7d / 7) + ((i * 3) % 3) - 1),
+        result: isFail ? 'EXTRACTION_FAILED' : '성공'
+      });
+    }
+  })();
+
+  document.getElementById('runs-body').innerHTML = runs.map(function (r) {
+    var timeLabel = Shell.pad2(r.time.getMonth() + 1) + '.' + Shell.pad2(r.time.getDate()) + ' ' + Shell.formatTimeHM(r.time);
+    var resultHtml = r.result === '성공'
+      ? '<span class="stamp stamp-ok">성공</span>'
+      : '<span class="stamp stamp-fail">' + esc(r.result) + '</span>';
+    return '<tr>' +
+      '<td class="font-mono">' + timeLabel + '</td>' +
+      '<td>' + esc(r.method) + '</td>' +
+      '<td class="font-mono">' + (r.durationMs / 1000).toFixed(1) + 's</td>' +
+      '<td class="font-mono">' + r.newCount + '</td>' +
+      '<td>' + resultHtml + '</td>' +
+    '</tr>';
+  }).join('');
+
+  // ---------------- 최근 항목 ----------------
+  var recentItems = MOCK.items.filter(function (it) { return it.sourceId === source.id; })
+    .sort(function (a, b) { return new Date(b.collectedAt) - new Date(a.collectedAt); })
+    .slice(0, 8);
+  var recentEl = document.getElementById('recent-items');
+  if (!recentItems.length) {
+    recentEl.innerHTML = '<div class="text-ink-2" style="font-size:12px;">최근 수집된 항목이 없습니다.</div>';
+  } else {
+    recentEl.innerHTML = recentItems.map(function (it) {
+      var t = new Date(it.collectedAt);
+      var timeLabel = Shell.pad2(t.getMonth() + 1) + '.' + Shell.pad2(t.getDate()) + ' ' + Shell.formatTimeHM(t);
+      return '<div class="flex items-baseline justify-between gap-3 py-1.5" style="border-bottom:1px solid var(--rule);">' +
+        '<span style="font-size:13px;">' + esc(it.title) + '</span>' +
+        '<span class="font-mono text-ink-2 shrink-0" style="font-size:11px;">' + timeLabel + '</span>' +
+      '</div>';
+    }).join('');
+  }
+
+  // ---------------- 동작 버튼: 지금 수집 / 명세 다시 만들기 ----------------
+  var actionLog = document.getElementById('action-log');
+  function appendActionLog(text) {
+    var now = new Date(MOCK.now);
+    var line = document.createElement('div');
+    line.className = 'log-note';
+    line.textContent = Shell.formatTimeHM(now) + ' ' + text;
+    actionLog.appendChild(line);
+  }
+
+  var collecting = false;
+  document.getElementById('collect-now-btn').addEventListener('click', function () {
+    if (collecting) return;
+    collecting = true;
+    appendActionLog('지금 수집 요청 … 진행 중');
+    window.setTimeout(function () {
+      var n = Math.max(0, Math.round(source.new7d / 7));
+      appendActionLog('지금 수집 완료 (신규 ' + n + '건)');
+      Shell.showToast('수집을 완료했습니다 (신규 ' + n + '건)');
+      collecting = false;
+    }, 900);
+  });
+
+  var rebuilding = false;
+  document.getElementById('rebuild-spec-btn').addEventListener('click', function () {
+    if (rebuilding) return;
+    rebuilding = true;
+    appendActionLog('명세 재생성 시도 … 진행 중');
+    window.setTimeout(function () {
+      var newV = versions[0].v + 1;
+      versions.forEach(function (v) { v.active = false; });
+      versions.unshift({ v: newV, method: 'LLM', createdAt: MOCK.now, active: true });
+      renderVersions(newV);
+      appendActionLog('명세 재생성 완료 (v' + newV + ' 적용)');
+      Shell.showToast('새 명세 v' + newV + '(으)로 교체했습니다');
+      rebuilding = false;
+    }, 900);
+  });
+})();
+</script>
+</body>
+</html>

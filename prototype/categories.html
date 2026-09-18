@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>myportal — 분류 정리</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="./assets/tailwind-config.js"></script>
+<link rel="stylesheet" href="./assets/tokens.css" />
+<style>
+  #app-grid {
+    display: grid;
+    grid-template-columns: var(--pane-0-width, 420px) minmax(0,1fr);
+    height: calc(100vh - 44px);
+  }
+  .pane-scroll { overflow-y: auto; height: 100%; }
+  #pane-tree { border-right: 1px solid var(--rule); }
+
+  .tree-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 6px;
+    border: 1px solid transparent;
+    cursor: pointer;
+  }
+  .tree-row:hover { background: var(--paper-2); }
+  .tree-row.selected { background: var(--paper-2); border-color: var(--rule); }
+  .tree-row.drop-target { outline: 2px solid var(--blue); outline-offset: -2px; }
+  .tree-handle { font-family: var(--font-mono); color: var(--ink-2); cursor: grab; padding: 0 4px; user-select: none; }
+  .tree-toggle2 { display:inline-block; width:12px; font-family: var(--font-mono); color: var(--ink-2); text-align:center; cursor:pointer; user-select:none; }
+  .tree-sub-count { font-family: var(--font-mono); font-size: 11px; color: var(--ink-2); }
+  .root-drop-zone {
+    margin: 10px 12px;
+    border: 1px dashed var(--rule);
+    padding: 8px;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-2);
+  }
+  .root-drop-zone.drop-target { outline: 2px solid var(--blue); outline-offset: -2px; border-style: solid; }
+
+  .sub-row { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--rule); cursor:grab; }
+  .sub-row:last-child { border-bottom:none; }
+
+  .tag-row { display:flex; align-items:center; justify-content:space-between; padding:5px 0; border-bottom:1px solid var(--rule); font-size:12px; }
+  .tag-row:last-child { border-bottom:none; }
+
+  #modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 300; display: none; align-items: center; justify-content: center; }
+  #modal-overlay.show { display: flex; }
+  #modal-box { background: var(--paper); border: 1px solid var(--ink); min-width: 420px; max-width: 560px; }
+
+  .mini-band { background: var(--paper-2); border: 1px solid var(--rule); padding: 8px 10px; font-size:12px; display:flex; align-items:center; gap:10px; margin-top:8px; }
+</style>
+</head>
+<body data-active-page="categories" class="bg-paper text-ink font-sans">
+<header id="masthead" style="height: 44px;"></header>
+
+<div id="app-grid">
+  <!-- 좌측: 트리 -->
+  <aside id="pane-tree" class="pane-scroll">
+    <div class="px-4 pt-4">
+      <h1  style="font-size:18px; font-weight:700;">분류 정리</h1>
+      <div class="rule-double" style="margin-top:4px; margin-bottom:10px;"></div>
+      <div class="flex items-center gap-2 flex-wrap mb-2">
+        <button id="btn-new-cat" class="btn btn-sm">새 카테고리</button>
+        <button id="btn-rename-cat" class="btn btn-sm">이름 변경</button>
+        <button id="btn-delete-cat" class="btn btn-sm">삭제</button>
+        <button id="btn-merge-cat" class="btn btn-sm">병합</button>
+      </div>
+      <div class="section-note" style="font-family:var(--font-mono); font-size:11px; color:var(--ink-2);">드래그 핸들 ⋮⋮ 로 카테고리를 다른 카테고리 위에 놓으면 하위로 이동합니다. 깊이 최대 4단계.</div>
+    </div>
+    <div id="tree-container" class="px-2 pb-4 pt-2"></div>
+    <div class="root-drop-zone" id="root-drop-zone">여기로 놓으면 최상위로 이동</div>
+  </aside>
+
+  <!-- 우측: 선택 카테고리의 구독 + 태그 관리 -->
+  <main class="pane-scroll px-5 py-4">
+    <div class="flex items-baseline justify-between">
+      <div  id="selected-cat-heading" style="font-size:18px; font-weight:700;"></div>
+      <div class="section-note font-mono" id="selected-cat-count" style="font-size:11px; color:var(--ink-2);"></div>
+    </div>
+    <div class="rule-double" style="margin-top:4px; margin-bottom:10px;"></div>
+
+    <div id="subs-list"></div>
+    <div id="subs-empty" class="hidden text-ink-2" style="font-size:12px;">이 카테고리에 속한 구독이 없습니다. 오른쪽 목록의 항목을 왼쪽 트리 노드 위로 드래그해 이동할 수 있습니다.</div>
+
+    <div class="mini-band hidden" id="subs-bulk-band">
+      <span id="subs-bulk-count"></span>
+      <label class="flex items-center gap-1">
+        이동 대상
+        <select id="subs-bulk-target" class="input-line" style="width:auto; padding:2px 4px; font-size:12px;"></select>
+      </label>
+      <button id="subs-bulk-move" class="btn btn-sm">이동</button>
+    </div>
+
+    <div class="rule-double" style="margin-top:26px; margin-bottom:10px;">
+      <div  style="font-size:15px; font-weight:700;">태그 관리</div>
+    </div>
+    <div id="tags-list"></div>
+    <div class="flex items-center gap-2 mt-3">
+      <input id="new-tag-name" class="input-line" style="font-size:12px; width:160px;" placeholder="새 태그 이름" />
+      <button id="add-tag-btn2" class="btn btn-sm">태그 추가</button>
+    </div>
+  </main>
+</div>
+
+<!-- 공용 모달 -->
+<div id="modal-overlay">
+  <div id="modal-box">
+    <div class="px-4 pt-4">
+      <div class="rule-double">
+        <h2  id="modal-title" style="font-size:16px; font-weight:700;"></h2>
+      </div>
+    </div>
+    <div class="px-4 py-3" id="modal-body" style="font-size:13px;"></div>
+    <div class="px-4 pb-4 text-right">
+      <button id="modal-cancel" class="btn btn-sm">취소</button>
+    </div>
+  </div>
+</div>
+
+<script src="./assets/mock-data.js"></script>
+<script src="./assets/shell.js"></script>
+<script src="./assets/resizable.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var MOCK = window.MOCK;
+  var Shell = window.MyPortalShell;
+  var esc = Shell.escapeHtml;
+  var MAX_DEPTH = 4;
+
+  // ---------------- 패널 리사이즈 ----------------
+  if (window.MyPortalResizable) {
+    window.MyPortalResizable.init(document.getElementById('app-grid'), {
+      storageKey: 'myportal-resize-categories',
+      flexIndex: 1,
+      panes: [
+        { default: 420, min: 280, max: 640 },
+        { min: 420 }
+      ]
+    });
+  }
+
+  // ---------------- 로컬 편집 가능한 데이터 ----------------
+  var categories = MOCK.categories.map(function (c) { return { id: c.id, name: c.name, parentId: c.parentId }; });
+  var sources = MOCK.sources.map(function (s) { return { id: s.id, name: s.name, categoryId: s.categoryId, tags: s.tags.slice() }; });
+  var tags = MOCK.tags.map(function (t) { return { id: t.id, name: t.name }; });
+
+  var categoriesById = {};
+  function reindexCategories() {
+    categoriesById = {};
+    categories.forEach(function (c) { categoriesById[c.id] = c; });
+  }
+  reindexCategories();
+
+  var treeExpanded = {};
+  categories.forEach(function (c) { treeExpanded[c.id] = true; });
+
+  var selectedCategoryId = categories.filter(function (c) { return !c.parentId; })[0].id;
+  var subsSelected = {};
+
+  // ---------------- 트리 유틸 ----------------
+  function childrenOf(parentId) {
+    return categories.filter(function (c) { return c.parentId === parentId; });
+  }
+  function depthOf(catId) {
+    var d = 1;
+    var cur = categoriesById[catId];
+    while (cur && cur.parentId) { d += 1; cur = categoriesById[cur.parentId]; }
+    return d;
+  }
+  function subtreeHeight(catId) {
+    var kids = childrenOf(catId);
+    if (!kids.length) return 1;
+    var max = 0;
+    kids.forEach(function (k) { max = Math.max(max, subtreeHeight(k.id)); });
+    return 1 + max;
+  }
+  function isDescendantOrSelf(candidateId, ofId) {
+    var cur = categoriesById[candidateId];
+    while (cur) {
+      if (cur.id === ofId) return true;
+      cur = cur.parentId ? categoriesById[cur.parentId] : null;
+    }
+    return false;
+  }
+  function categoryPathLabel(catId) {
+    var cat = categoriesById[catId];
+    if (!cat) return '미분류';
+    if (!cat.parentId) return cat.name;
+    return categoryPathLabel(cat.parentId) + ' › ' + cat.name;
+  }
+  function directSubCount(catId) {
+    return sources.filter(function (s) { return s.categoryId === catId; }).length;
+  }
+
+  function moveCategory(movingId, targetParentId) {
+    if (movingId === targetParentId) return;
+    if (targetParentId !== null && isDescendantOrSelf(targetParentId, movingId)) {
+      Shell.showToast('이동할 수 없습니다: 하위 카테고리로는 이동할 수 없습니다 (CATEGORY_CYCLE)');
+      return;
+    }
+    var newDepth = targetParentId === null ? 1 : depthOf(targetParentId) + 1;
+    var height = subtreeHeight(movingId);
+    if (newDepth + height - 1 > MAX_DEPTH) {
+      Shell.showToast('카테고리 깊이 제한(최대 4단계)을 초과합니다 (CATEGORY_DEPTH_EXCEEDED)');
+      return;
+    }
+    categoriesById[movingId].parentId = targetParentId;
+    Shell.showToast('‘' + categoriesById[movingId].name + '’ 카테고리를 이동했습니다');
+    renderAll();
+  }
+
+  function moveSource(sourceId, targetCategoryId) {
+    var s = sources.filter(function (x) { return x.id === sourceId; })[0];
+    if (!s) return;
+    s.categoryId = targetCategoryId;
+    Shell.showToast('구독을 ‘' + categoryPathLabel(targetCategoryId) + '’(으)로 이동했습니다');
+    renderAll();
+  }
+
+  // ---------------- 트리 렌더 ----------------
+  var treeContainer = document.getElementById('tree-container');
+
+  function renderTreeNode(cat, depth) {
+    var kids = childrenOf(cat.id);
+    var hasKids = kids.length > 0;
+    var expanded = !!treeExpanded[cat.id];
+    var selected = cat.id === selectedCategoryId;
+
+    var html = '<div class="tree-row' + (selected ? ' selected' : '') + '" style="padding-left:' + (depth * 14) + 'px;" data-cat-id="' + cat.id + '" draggable="true">' +
+      '<span class="flex items-center min-w-0">' +
+        '<span class="tree-handle" title="드래그로 이동">⋮⋮</span>' +
+        (hasKids ? '<span class="tree-toggle2" data-toggle-cat="' + cat.id + '">' + (expanded ? '▾' : '▸') + '</span>' : '<span class="tree-toggle2"></span>') +
+        '<span class="truncate" style="font-size:13px;">' + esc(cat.name) + '</span>' +
+      '</span>' +
+      '<span class="tree-sub-count">' + directSubCount(cat.id) + '</span>' +
+    '</div>';
+
+    if (hasKids && expanded) {
+      kids.forEach(function (k) { html += renderTreeNode(k, depth + 1); });
+    }
+    return html;
+  }
+
+  function renderTree() {
+    var roots = childrenOf(null);
+    treeContainer.innerHTML = roots.map(function (c) { return renderTreeNode(c, 0); }).join('');
+    attachTreeHandlers();
+  }
+
+  var draggingCategoryId = null;
+
+  function attachTreeHandlers() {
+    document.querySelectorAll('[data-toggle-cat]').forEach(function (el) {
+      el.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        var id = el.getAttribute('data-toggle-cat');
+        treeExpanded[id] = !treeExpanded[id];
+        renderTree();
+      });
+    });
+    document.querySelectorAll('[data-cat-id]').forEach(function (el) {
+      var catId = el.getAttribute('data-cat-id');
+
+      el.addEventListener('click', function () {
+        selectedCategoryId = catId;
+        subsSelected = {};
+        renderAll();
+      });
+
+      el.addEventListener('dragstart', function (ev) {
+        draggingCategoryId = catId;
+        ev.dataTransfer.setData('text/plain', 'category:' + catId);
+        ev.dataTransfer.effectAllowed = 'move';
+      });
+
+      el.addEventListener('dragover', function (ev) {
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = 'move';
+      });
+      el.addEventListener('dragenter', function (ev) {
+        ev.preventDefault();
+        el.classList.add('drop-target');
+      });
+      el.addEventListener('dragleave', function () {
+        el.classList.remove('drop-target');
+      });
+      el.addEventListener('drop', function (ev) {
+        ev.preventDefault();
+        el.classList.remove('drop-target');
+        var data = ev.dataTransfer.getData('text/plain') || '';
+        if (data.indexOf('category:') === 0) {
+          moveCategory(data.slice(9), catId);
+        } else if (data.indexOf('source:') === 0) {
+          moveSource(data.slice(7), catId);
+        }
+      });
+    });
+
+    var rootZone = document.getElementById('root-drop-zone');
+    rootZone.addEventListener('dragover', function (ev) { ev.preventDefault(); });
+    rootZone.addEventListener('dragenter', function (ev) { ev.preventDefault(); rootZone.classList.add('drop-target'); });
+    rootZone.addEventListener('dragleave', function () { rootZone.classList.remove('drop-target'); });
+    rootZone.addEventListener('drop', function (ev) {
+      ev.preventDefault();
+      rootZone.classList.remove('drop-target');
+      var data = ev.dataTransfer.getData('text/plain') || '';
+      if (data.indexOf('category:') === 0) moveCategory(data.slice(9), null);
+    });
+  }
+
+  // ---------------- 우측: 구독 목록 ----------------
+  function renderSubs() {
+    document.getElementById('selected-cat-heading').textContent = categoryPathLabel(selectedCategoryId);
+    var list = sources.filter(function (s) { return s.categoryId === selectedCategoryId; });
+    document.getElementById('selected-cat-count').textContent = list.length + '건 구독';
+
+    var el = document.getElementById('subs-list');
+    var empty = document.getElementById('subs-empty');
+    if (!list.length) {
+      el.innerHTML = '';
+      empty.classList.remove('hidden');
+    } else {
+      empty.classList.add('hidden');
+      el.innerHTML = list.map(function (s) {
+        var checked = !!subsSelected[s.id];
+        var tagLabels = s.tags.map(function (tid) {
+          var t = tags.filter(function (x) { return x.id === tid; })[0];
+          return t ? t.name : tid;
+        }).join(', ');
+        return '<div class="sub-row" data-sub-id="' + s.id + '" draggable="true">' +
+          '<input type="checkbox" class="sub-check" data-id="' + s.id + '"' + (checked ? ' checked' : '') + ' />' +
+          '<span class="tree-handle">⋮⋮</span>' +
+          '<span class="flex-1 min-w-0 truncate" style="font-size:13px;">' + esc(s.name) + '</span>' +
+          '<span class="font-mono text-ink-2" style="font-size:11px;">' + esc(tagLabels) + '</span>' +
+        '</div>';
+      }).join('');
+    }
+    attachSubsHandlers();
+    renderSubsBulk();
+  }
+
+  function attachSubsHandlers() {
+    document.querySelectorAll('.sub-row').forEach(function (row) {
+      var id = row.getAttribute('data-sub-id');
+      row.addEventListener('dragstart', function (ev) {
+        ev.dataTransfer.setData('text/plain', 'source:' + id);
+        ev.dataTransfer.effectAllowed = 'move';
+      });
+    });
+    document.querySelectorAll('.sub-check').forEach(function (el) {
+      el.addEventListener('click', function (ev) { ev.stopPropagation(); });
+      el.addEventListener('change', function () {
+        var id = el.getAttribute('data-id');
+        if (el.checked) subsSelected[id] = true; else delete subsSelected[id];
+        renderSubsBulk();
+      });
+    });
+  }
+
+  function renderSubsBulk() {
+    var band = document.getElementById('subs-bulk-band');
+    var ids = Object.keys(subsSelected);
+    if (!ids.length) { band.classList.add('hidden'); return; }
+    band.classList.remove('hidden');
+    document.getElementById('subs-bulk-count').textContent = ids.length + '건 선택됨';
+    var select = document.getElementById('subs-bulk-target');
+    select.innerHTML = categories.map(function (c) {
+      return '<option value="' + c.id + '">' + esc(categoryPathLabel(c.id)) + '</option>';
+    }).join('');
+  }
+
+  document.getElementById('subs-bulk-move').addEventListener('click', function () {
+    var ids = Object.keys(subsSelected);
+    var target = document.getElementById('subs-bulk-target').value;
+    if (!ids.length || !target) return;
+    ids.forEach(function (id) {
+      var s = sources.filter(function (x) { return x.id === id; })[0];
+      if (s) s.categoryId = target;
+    });
+    Shell.showToast(ids.length + '건을 ‘' + categoryPathLabel(target) + '’(으)로 이동했습니다');
+    subsSelected = {};
+    renderAll();
+  });
+
+  // ---------------- 태그 관리 ----------------
+  function tagUsageCount(tagId) {
+    var n = 0;
+    sources.forEach(function (s) { if (s.tags.indexOf(tagId) !== -1) n += 1; });
+    return n;
+  }
+
+  function renderTags() {
+    var el = document.getElementById('tags-list');
+    el.innerHTML = tags.map(function (t) {
+      return '<div class="tag-row" data-tag-id="' + t.id + '">' +
+        '<span>#' + esc(t.name) + ' <span class="font-mono text-ink-2">(' + tagUsageCount(t.id) + ')</span></span>' +
+        '<span class="flex items-center gap-2">' +
+          '<button class="btn btn-sm" data-rename-tag="' + t.id + '">이름변경</button>' +
+          '<button class="btn btn-sm" data-delete-tag="' + t.id + '">삭제</button>' +
+        '</span>' +
+      '</div>';
+    }).join('');
+
+    el.querySelectorAll('[data-rename-tag]').forEach(function (btn) {
+      btn.addEventListener('click', function () { openRenameTagModal(btn.getAttribute('data-rename-tag')); });
+    });
+    el.querySelectorAll('[data-delete-tag]').forEach(function (btn) {
+      btn.addEventListener('click', function () { openDeleteTagModal(btn.getAttribute('data-delete-tag')); });
+    });
+  }
+
+  document.getElementById('add-tag-btn2').addEventListener('click', function () {
+    var input = document.getElementById('new-tag-name');
+    var name = input.value.trim();
+    if (!name) return;
+    var id = 'tag-' + Date.now();
+    tags.push({ id: id, name: name });
+    input.value = '';
+    Shell.showToast('태그 ‘' + name + '’ 을(를) 추가했습니다');
+    renderAll();
+  });
+
+  // ---------------- 모달 ----------------
+  var overlay = document.getElementById('modal-overlay');
+  var modalTitle = document.getElementById('modal-title');
+  var modalBody = document.getElementById('modal-body');
+
+  function showModal(title, bodyHtml) {
+    modalTitle.textContent = title;
+    modalBody.innerHTML = bodyHtml;
+    overlay.classList.add('show');
+  }
+  function hideModal() { overlay.classList.remove('show'); }
+  document.getElementById('modal-cancel').addEventListener('click', hideModal);
+  overlay.addEventListener('click', function (ev) { if (ev.target === overlay) hideModal(); });
+
+  function openCreateModal() {
+    var options = categories.filter(function (c) { return depthOf(c.id) < MAX_DEPTH; })
+      .map(function (c) { return '<option value="' + c.id + '">' + esc(categoryPathLabel(c.id)) + '</option>'; }).join('');
+    showModal('새 카테고리', '' +
+      '<label class="section-note" style="display:block; margin-bottom:2px; font-size:11px; color:var(--ink-2);">상위 카테고리</label>' +
+      '<select id="create-parent-select" class="input-line mb-3" style="font-size:13px;"><option value="">(최상위)</option>' + options + '</select>' +
+      '<label class="section-note" style="display:block; margin-bottom:2px; font-size:11px; color:var(--ink-2);">이름</label>' +
+      '<input id="create-name-input" class="input-line mb-3" style="font-size:13px;" placeholder="카테고리 이름" />' +
+      '<button id="create-confirm-btn" class="btn btn-primary btn-sm">만들기</button>');
+    document.getElementById('create-confirm-btn').addEventListener('click', function () {
+      var parent = document.getElementById('create-parent-select').value || null;
+      var name = document.getElementById('create-name-input').value.trim();
+      if (!name) { Shell.showToast('이름을 입력하세요'); return; }
+      var id = 'cat-' + Date.now();
+      categories.push({ id: id, name: name, parentId: parent });
+      reindexCategories();
+      treeExpanded[id] = true;
+      if (parent) treeExpanded[parent] = true;
+      selectedCategoryId = id;
+      hideModal();
+      Shell.showToast('‘' + name + '’ 카테고리를 만들었습니다');
+      renderAll();
+    });
+  }
+
+  function openRenameModal() {
+    var cat = categoriesById[selectedCategoryId];
+    if (!cat) { Shell.showToast('카테고리를 선택하세요'); return; }
+    showModal('이름 변경', '' +
+      '<input id="rename-input" class="input-line mb-3" style="font-size:13px;" value="' + esc(cat.name) + '" />' +
+      '<button id="rename-confirm-btn" class="btn btn-primary btn-sm">변경</button>');
+    document.getElementById('rename-input').focus();
+    document.getElementById('rename-confirm-btn').addEventListener('click', function () {
+      var name = document.getElementById('rename-input').value.trim();
+      if (!name) { Shell.showToast('이름을 입력하세요'); return; }
+      cat.name = name;
+      hideModal();
+      Shell.showToast('이름을 변경했습니다');
+      renderAll();
+    });
+  }
+
+  function openDeleteModal() {
+    var cat = categoriesById[selectedCategoryId];
+    if (!cat) { Shell.showToast('카테고리를 선택하세요'); return; }
+    var kidCount = childrenOf(cat.id).length;
+    var subCount = directSubCount(cat.id);
+    var parentLabel = cat.parentId ? categoryPathLabel(cat.parentId) : '최상위';
+    showModal('카테고리 삭제', '' +
+      '<p style="margin-bottom:8px;">‘' + esc(cat.name) + '’ 을(를) 삭제합니다.</p>' +
+      '<p class="section-note" style="font-size:12px; color:var(--ink-2); margin-bottom:4px;">하위 카테고리 ' + kidCount + '개는 ‘' + esc(cat.parentId ? parentLabel : '최상위') + '’(으)로 이동합니다.</p>' +
+      '<p class="section-note" style="font-size:12px; color:var(--ink-2); margin-bottom:12px;">구독 ' + subCount + '건은 ‘' + esc(cat.parentId ? parentLabel : '미분류') + '’(으)로 이동합니다. 구독 자체는 삭제되지 않습니다.</p>' +
+      '<button id="delete-confirm-btn" class="btn btn-sm" style="border-color:var(--fail); color:var(--fail);">삭제</button>');
+    document.getElementById('delete-confirm-btn').addEventListener('click', function () {
+      var childDest = cat.parentId; // null이면 최상위
+      var subDest = cat.parentId || 'cat-uncat';
+      categories.forEach(function (c) { if (c.parentId === cat.id) c.parentId = childDest; });
+      sources.forEach(function (s) { if (s.categoryId === cat.id) s.categoryId = subDest; });
+      categories = categories.filter(function (c) { return c.id !== cat.id; });
+      reindexCategories();
+      selectedCategoryId = childDest || 'cat-uncat';
+      hideModal();
+      Shell.showToast('카테고리를 삭제했습니다');
+      renderAll();
+    });
+  }
+
+  function openMergeModal() {
+    var cat = categoriesById[selectedCategoryId];
+    if (!cat) { Shell.showToast('카테고리를 선택하세요'); return; }
+    var options = categories.filter(function (c) { return c.id !== cat.id && !isDescendantOrSelf(c.id, cat.id); })
+      .map(function (c) { return '<option value="' + c.id + '">' + esc(categoryPathLabel(c.id)) + '</option>'; }).join('');
+    if (!options) { Shell.showToast('병합할 대상 카테고리가 없습니다'); return; }
+    showModal('카테고리 병합', '' +
+      '<label class="section-note" style="display:block; margin-bottom:2px; font-size:11px; color:var(--ink-2);">대상 카테고리</label>' +
+      '<select id="merge-target-select" class="input-line mb-3" style="font-size:13px;">' + options + '</select>' +
+      '<p id="merge-preview" class="section-note" style="font-size:12px; color:var(--ink-2); margin-bottom:12px;"></p>' +
+      '<button id="merge-confirm-btn" class="btn btn-primary btn-sm">병합</button>');
+
+    function updatePreview() {
+      var targetId = document.getElementById('merge-target-select').value;
+      var kidCount = childrenOf(cat.id).length;
+      var subCount = directSubCount(cat.id);
+      document.getElementById('merge-preview').textContent =
+        '하위 카테고리 ' + kidCount + '개, 구독 ' + subCount + '건이 ‘' + categoryPathLabel(targetId) + '’(으)로 이동한 뒤 ‘' + cat.name + '’ 은(는) 삭제됩니다.';
+    }
+    document.getElementById('merge-target-select').addEventListener('change', updatePreview);
+    updatePreview();
+
+    document.getElementById('merge-confirm-btn').addEventListener('click', function () {
+      var targetId = document.getElementById('merge-target-select').value;
+      categories.forEach(function (c) { if (c.parentId === cat.id) c.parentId = targetId; });
+      sources.forEach(function (s) { if (s.categoryId === cat.id) s.categoryId = targetId; });
+      categories = categories.filter(function (c) { return c.id !== cat.id; });
+      reindexCategories();
+      selectedCategoryId = targetId;
+      hideModal();
+      Shell.showToast('‘' + categoryPathLabel(targetId) + '’(으)로 병합했습니다');
+      renderAll();
+    });
+  }
+
+  function openRenameTagModal(tagId) {
+    var tag = tags.filter(function (t) { return t.id === tagId; })[0];
+    if (!tag) return;
+    showModal('태그 이름 변경', '' +
+      '<input id="tag-rename-input" class="input-line mb-3" style="font-size:13px;" value="' + esc(tag.name) + '" />' +
+      '<button id="tag-rename-confirm" class="btn btn-primary btn-sm">변경</button>');
+    document.getElementById('tag-rename-confirm').addEventListener('click', function () {
+      var name = document.getElementById('tag-rename-input').value.trim();
+      if (!name) { Shell.showToast('이름을 입력하세요'); return; }
+      tag.name = name;
+      hideModal();
+      Shell.showToast('태그 이름을 변경했습니다');
+      renderAll();
+    });
+  }
+
+  function openDeleteTagModal(tagId) {
+    var tag = tags.filter(function (t) { return t.id === tagId; })[0];
+    if (!tag) return;
+    var usage = tagUsageCount(tagId);
+    showModal('태그 삭제', '' +
+      '<p style="margin-bottom:10px;">‘#' + esc(tag.name) + '’ 태그를 삭제하면 ' + usage + '건의 구독에서 이 태그가 제거됩니다.</p>' +
+      '<button id="tag-delete-confirm" class="btn btn-sm" style="border-color:var(--fail); color:var(--fail);">삭제</button>');
+    document.getElementById('tag-delete-confirm').addEventListener('click', function () {
+      sources.forEach(function (s) { s.tags = s.tags.filter(function (t) { return t !== tagId; }); });
+      tags = tags.filter(function (t) { return t.id !== tagId; });
+      hideModal();
+      Shell.showToast('태그를 삭제했습니다');
+      renderAll();
+    });
+  }
+
+  document.getElementById('btn-new-cat').addEventListener('click', openCreateModal);
+  document.getElementById('btn-rename-cat').addEventListener('click', openRenameModal);
+  document.getElementById('btn-delete-cat').addEventListener('click', openDeleteModal);
+  document.getElementById('btn-merge-cat').addEventListener('click', openMergeModal);
+
+  // ---------------- 전체 렌더 ----------------
+  function renderAll() {
+    renderTree();
+    renderSubs();
+    renderTags();
+  }
+
+  renderAll();
+})();
+</script>
+</body>
+</html>

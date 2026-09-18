@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>myportal — 구조 조망</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="./assets/tailwind-config.js"></script>
+<link rel="stylesheet" href="./assets/tokens.css" />
+<style>
+  #content { max-width: 1400px; margin: 0 auto; padding-bottom: 48px; }
+  table.matrix { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.matrix th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 7px 10px;
+    border-bottom: 2px solid var(--ink);
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+  }
+  table.matrix th:hover { background: var(--paper-2); }
+  table.matrix th.col-active { background: var(--rule); color: var(--ink); }
+  table.matrix td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--rule);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    vertical-align: top;
+  }
+  tr.group-row td {
+    font-family: var(--font-sans);
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    color: var(--ink-2);
+    background: var(--paper-2);
+    border-bottom: 1px solid var(--rule);
+    padding: 5px 10px;
+  }
+  td.dot { color: var(--ink-2); opacity: 0.5; text-align:center; }
+  td.source-name { font-family: var(--font-sans); font-size: 12px; color: var(--ink); white-space: nowrap; }
+</style>
+</head>
+<body data-active-page="schema-map" class="bg-paper text-ink font-sans">
+<header id="masthead" style="height: 44px;"></header>
+
+<div id="content" class="px-6 py-5">
+  <h1  style="font-size:20px; font-weight:700;">구조 조망</h1>
+  <div class="rule-double" style="margin-top:4px; margin-bottom:6px;"></div>
+  <div class="font-mono text-ink-2" id="summary-line" style="font-size:11px; margin-bottom:12px;"></div>
+
+  <div style="overflow-x:auto;">
+    <table class="matrix">
+      <thead>
+        <tr id="matrix-head"></tr>
+      </thead>
+      <tbody id="matrix-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<script src="./assets/mock-data.js"></script>
+<script src="./assets/shell.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var MOCK = window.MOCK;
+  var Shell = window.MyPortalShell;
+  var esc = Shell.escapeHtml;
+
+  var categoriesById = {};
+  MOCK.categories.forEach(function (c) { categoriesById[c.id] = c; });
+  function categoryPathLabel(catId) {
+    var cat = categoriesById[catId];
+    if (!cat) return '미분류';
+    if (!cat.parentId) return cat.name;
+    return categoryPathLabel(cat.parentId) + ' › ' + cat.name;
+  }
+
+  var COLUMNS = [
+    { id: 'title', label: '제목' },
+    { id: 'link', label: '링크' },
+    { id: 'published', label: '게시일' },
+    { id: 'deadline', label: '마감일' },
+    { id: 'summary', label: '요약' },
+    { id: 'thumbnail', label: '썸네일' },
+    { id: 'other', label: '기타 필드' }
+  ];
+
+  function cellValue(source, colId) {
+    if (colId === 'title') return 'title';
+    if (colId === 'link') return 'url';
+    if (colId === 'published') return 'published_at';
+    if (colId === 'summary') return 'excerpt';
+    if (colId === 'deadline') {
+      var df = source.fields.filter(function (f) { return f.role === 'deadline'; })[0];
+      return df ? df.key : null;
+    }
+    if (colId === 'thumbnail') {
+      var tf = source.fields.filter(function (f) { return f.type === 'image'; })[0];
+      return tf ? tf.key : null;
+    }
+    if (colId === 'other') {
+      var others = source.fields.filter(function (f) { return f.role !== 'deadline' && f.type !== 'image'; }).map(function (f) { return f.key; });
+      return others.length ? others.join(', ') : null;
+    }
+    return null;
+  }
+
+  // ---------------- 요약 ----------------
+  var totalSources = MOCK.sources.length;
+  var deadlineCount = MOCK.sources.filter(function (s) { return cellValue(s, 'deadline') !== null; }).length;
+  var uniqueKeys = {};
+  MOCK.sources.forEach(function (s) { s.fields.forEach(function (f) { uniqueKeys[f.key] = true; }); });
+  var uniqueFieldCount = Object.keys(uniqueKeys).length;
+  document.getElementById('summary-line').textContent =
+    '소스 ' + totalSources + ' · 마감일 필드 보유 ' + deadlineCount + ' · 고유 필드 ' + uniqueFieldCount;
+
+  // ---------------- 카테고리별 그룹 (트리 선행 순서) ----------------
+  function childrenOf(parentId) {
+    return MOCK.categories.filter(function (c) { return c.parentId === parentId; });
+  }
+  var orderedCategoryIds = [];
+  (function walk(parentId) {
+    childrenOf(parentId).forEach(function (c) {
+      orderedCategoryIds.push(c.id);
+      walk(c.id);
+    });
+  })(null);
+
+  var groups = orderedCategoryIds.map(function (catId) {
+    var list = MOCK.sources.filter(function (s) { return s.categoryId === catId; })
+      .sort(function (a, b) { return a.name.localeCompare(b.name); });
+    return { catId: catId, sources: list };
+  }).filter(function (g) { return g.sources.length > 0; });
+
+  // ---------------- 렌더 ----------------
+  var activeCol = null;
+
+  function renderHead() {
+    var head = document.getElementById('matrix-head');
+    head.innerHTML = '<th style="min-width:180px;">소스</th>' + COLUMNS.map(function (col) {
+      return '<th data-col="' + col.id + '" class="' + (activeCol === col.id ? 'col-active' : '') + '">' + esc(col.label) + '</th>';
+    }).join('');
+    head.querySelectorAll('[data-col]').forEach(function (th) {
+      th.addEventListener('click', function () {
+        var col = th.getAttribute('data-col');
+        activeCol = activeCol === col ? null : col;
+        renderAll();
+      });
+    });
+  }
+
+  function renderBody() {
+    var body = document.getElementById('matrix-body');
+    var html = '';
+    groups.forEach(function (g) {
+      var sourcesToShow = g.sources;
+      if (activeCol) {
+        sourcesToShow = sourcesToShow.filter(function (s) { return cellValue(s, activeCol) !== null; });
+      }
+      if (!sourcesToShow.length) return;
+      html += '<tr class="group-row"><td colspan="' + (COLUMNS.length + 1) + '">' + esc(categoryPathLabel(g.catId)) + ' (' + sourcesToShow.length + ')</td></tr>';
+      sourcesToShow.forEach(function (s) {
+        html += '<tr>';
+        html += '<td class="source-name">' + esc(s.name) + '</td>';
+        COLUMNS.forEach(function (col) {
+          var v = cellValue(s, col.id);
+          if (v === null) {
+            html += '<td class="dot">·</td>';
+          } else {
+            html += '<td' + (activeCol === col.id ? ' style="color:var(--ink); font-weight:500;"' : '') + '>' + esc(v) + '</td>';
+          }
+        });
+        html += '</tr>';
+      });
+    });
+    if (!html) {
+      html = '<tr><td colspan="' + (COLUMNS.length + 1) + '" class="text-ink-2" style="font-family:var(--font-sans); padding:16px 10px;">해당 필드를 가진 소스가 없습니다.</td></tr>';
+    }
+    body.innerHTML = html;
+  }
+
+  function renderAll() {
+    renderHead();
+    renderBody();
+  }
+
+  renderAll();
+})();
+</script>
+</body>
+</html>
