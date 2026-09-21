@@ -1,0 +1,444 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  myportal 디자인 토큰 & 공통 컴포넌트
+  참고: docs/디자인컨셉.md §4.2 (색상/타이포/컴포넌트), DESIGN.md
+  모서리 반경 0, 그림자 없음, 괘선(1px)으로만 구획한다.
+*/
+
+/* ---------- 색상 토큰: 라이트(기본) ---------- */
+:root {
+  --paper: #F3EFE4;
+  --paper-2: #E9E3D3;
+  --ink: #1B1A17;
+  --ink-2: #5E584B;
+  --ink-read: #9A9384;
+  --rule: #CFC6B0;
+  --red: #B8321F;
+  --amber: #9A6A12;
+  --amber-bg: rgba(154, 106, 18, 0.16);
+  --blue: #1F4E79;
+  --warn: #8A5A00;
+  --fail: #7A1F1F;
+
+  --font-sans: 'Malgun Gothic', '맑은 고딕', 'Apple SD Gothic Neo', sans-serif;
+  --font-mono: 'Malgun Gothic', '맑은 고딕', 'Apple SD Gothic Neo', sans-serif;
+  --font-code: Consolas, 'D2Coding', monospace;
+
+  --fs-meta: 11px;
+  --fs-base: 13px;
+  --fs-detail: 15px;
+  --fs-section: 20px;
+  --fs-wordmark: 28px;
+
+  --masthead-h: 44px;
+  --transition: 200ms;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #14130F;
+    --paper-2: #1D1B16;
+    --ink: #E6E0D0;
+    --ink-2: #A39C8B;
+    --ink-read: #6A6457;
+    --rule: #34312A;
+    --red: #E0674F;
+    --amber: #E3A83B;
+    --amber-bg: rgba(227, 168, 59, 0.16);
+    --blue: #7FA7CF;
+    --warn: #D69A2E;
+    --fail: #D0605A;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper: #14130F;
+  --paper-2: #1D1B16;
+  --ink: #E6E0D0;
+  --ink-2: #A39C8B;
+  --ink-read: #6A6457;
+  --rule: #34312A;
+  --red: #E0674F;
+  --amber: #E3A83B;
+  --amber-bg: rgba(227, 168, 59, 0.16);
+  --blue: #7FA7CF;
+  --warn: #D69A2E;
+  --fail: #D0605A;
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --paper: #F3EFE4;
+  --paper-2: #E9E3D3;
+  --ink: #1B1A17;
+  --ink-2: #5E584B;
+  --ink-read: #9A9384;
+  --rule: #CFC6B0;
+  --red: #B8321F;
+  --amber: #9A6A12;
+  --amber-bg: rgba(154, 106, 18, 0.16);
+  --blue: #1F4E79;
+  --warn: #8A5A00;
+  --fail: #7A1F1F;
+  color-scheme: light;
+}
+
+/* ---------- 기본 스타일 ---------- */
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  transition: background var(--transition) ease, color var(--transition) ease;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+::selection {
+  background: var(--amber-bg);
+  color: var(--ink);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--rule);
+}
+::-webkit-scrollbar-track {
+  background: var(--paper-2);
+}
+
+/* ---------- 유틸 ---------- */
+.font-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.text-ink-2 { color: var(--ink-2); }
+.text-ink-read { color: var(--ink-read); }
+.text-red { color: var(--red); }
+.text-amber { color: var(--amber); }
+.text-blue { color: var(--blue); }
+
+/* ---------- 괘선 ---------- */
+.rule-double {
+  border-bottom: 2px solid var(--ink);
+  padding-bottom: 6px;
+  position: relative;
+}
+.rule-double::after {
+  content: "";
+  display: block;
+  height: 1px;
+  background: var(--rule);
+  margin-top: 3px;
+}
+
+.rule-line {
+  border: none;
+  border-top: 1px solid var(--rule);
+  margin: 0;
+}
+
+/* ---------- 버튼 ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--ink);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 0;
+  cursor: pointer;
+  transition: background var(--transition) ease, color var(--transition) ease, opacity var(--transition) ease;
+  line-height: 1.2;
+}
+.btn:hover {
+  background: var(--rule);
+}
+.btn:active {
+  opacity: 0.75;
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+.btn-primary:hover {
+  background: var(--ink);
+  opacity: 0.88;
+}
+.btn-sm {
+  padding: 3px 8px;
+  font-size: var(--fs-meta);
+}
+
+/* ---------- 입력 (밑줄형) ---------- */
+.input-line {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--ink-2);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  padding: 6px 2px;
+  border-radius: 0;
+  outline: none;
+  transition: border-color var(--transition) ease, border-bottom-width var(--transition) ease;
+}
+.input-line::placeholder {
+  color: var(--ink-2);
+  opacity: 0.7;
+}
+.input-line:focus {
+  border-bottom: 2px solid var(--blue);
+  padding-bottom: 5px;
+}
+textarea.input-line {
+  font-family: var(--font-mono);
+  resize: vertical;
+}
+
+/* ---------- 상태 도장 (stamp) ---------- */
+.stamp {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid currentColor;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  padding: 1px 6px;
+  letter-spacing: 0.02em;
+  border-radius: 0;
+  white-space: nowrap;
+}
+.stamp-ok { color: var(--ink-2); }
+.stamp-warn { color: var(--warn); }
+.stamp-fail { color: var(--fail); }
+.stamp-pause { color: var(--ink-2); }
+.stamp-link { color: var(--blue); }
+
+/* ---------- 단축키 표기 ---------- */
+.kbd {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--ink-2);
+  border: 1px solid var(--rule);
+  padding: 0 4px;
+  border-radius: 0;
+  line-height: 1.6;
+}
+
+/* ---------- D-day 도장 ---------- */
+.dday {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  border: 1px solid var(--ink-2);
+  padding: 1px 6px;
+  color: var(--ink-2);
+  border-radius: 0;
+}
+.dday-urgent {
+  border-color: var(--red);
+  color: var(--red);
+}
+.dday-past {
+  text-decoration: line-through;
+  color: var(--ink-read);
+  border-color: var(--rule);
+}
+
+/* ---------- 키워드 강조(형광펜) ---------- */
+.kw-mark {
+  background: var(--amber-bg);
+  color: var(--ink);
+  padding: 0 1px;
+  border-bottom: 2px solid var(--amber);
+}
+
+.kw-tag {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--amber);
+  border: 1px solid var(--amber);
+  padding: 0 5px;
+  margin-left: 6px;
+  border-radius: 0;
+  white-space: nowrap;
+}
+
+/* ---------- 목록 행 ---------- */
+.row-new {
+  border-left: 3px solid var(--red);
+  padding-left: 9px;
+  transition: border-color var(--transition) ease;
+}
+.row-read {
+  border-left: 3px solid transparent;
+  padding-left: 9px;
+  color: var(--ink-read);
+  transition: border-color var(--transition) ease, color var(--transition) ease;
+}
+.row-read .row-title {
+  color: var(--ink-read);
+  transition: color var(--transition) ease;
+}
+
+.cursor-row {
+  position: relative;
+}
+.cursor-row::before {
+  content: "";
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--blue);
+}
+
+/* ---------- 트리 ---------- */
+.tree-toggle {
+  display: inline-block;
+  width: 12px;
+  font-family: var(--font-mono);
+  color: var(--ink-2);
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+}
+.tree-count {
+  font-family: var(--font-mono);
+  color: var(--red);
+  font-size: var(--fs-meta);
+  min-width: 1.5em;
+  text-align: right;
+  display: inline-block;
+}
+.tree-count-zero {
+  color: var(--ink-2);
+  opacity: 0.5;
+}
+
+/* ---------- 리사이즈 분할선 ---------- */
+.splitter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 20;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.splitter::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  margin-left: -0.5px;
+  background: var(--rule);
+  transition: background var(--transition) ease, width var(--transition) ease;
+}
+.splitter:hover::after,
+.splitter:focus-visible::after,
+.splitter.is-dragging::after {
+  background: var(--blue);
+  width: 2px;
+  margin-left: -1px;
+}
+.splitter:focus-visible {
+  outline: none;
+}
+
+/* ---------- 토스트 / 안내 띠 ---------- */
+.toast-mono {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  padding: 8px 14px;
+  border-radius: 0;
+  z-index: 200;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition) ease;
+}
+.toast-mono.show {
+  opacity: 1;
+}
+
+.undo-band {
+  position: fixed;
+  left: 260px;
+  right: 0;
+  bottom: 0;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: var(--fs-base);
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  z-index: 150;
+  transform: translateY(100%);
+  transition: transform var(--transition) ease;
+}
+.undo-band.show {
+  transform: translateY(0);
+}
+.undo-band button {
+  background: transparent;
+  border: 1px solid var(--paper);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  padding: 3px 10px;
+  cursor: pointer;
+  border-radius: 0;
+}
+.undo-band button:hover {
+  background: var(--paper);
+  color: var(--ink);
+}
