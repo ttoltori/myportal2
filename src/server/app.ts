@@ -1,9 +1,7 @@
 import { Hono } from "hono";
-import type { Context } from "hono";
 import { cors } from "hono/cors";
-import { requestIdMiddleware } from "./middleware/request-id";
-import { error as errorResponse } from "./utils/response";
-import { AppError, errorCodes, internalError } from "./errors/error-codes";
+import { attachErrorHandling, requestIdMiddleware } from "@ttoltori/hono-api-kit";
+import { errorCodes } from "./errors/error-codes";
 import { env } from "./config/env";
 import { authRoutes } from "./routes/auth.routes";
 import { deskRoutes } from "./routes/desk.routes";
@@ -31,20 +29,13 @@ export function createApp(): Hono {
     }),
   );
 
-  app.onError((err, c) => {
-    if (err instanceof AppError) {
-      return errorResponse(c, err);
-    }
-    // 내부 오류는 코드/메시지를 숨기고 안정적인 코드만 반환한다 (§15).
-    console.error(`[myportal] unhandled error:`, err);
-    return errorResponse(c, internalError());
-  });
-
-  app.notFound((c: Context) => {
-    return errorResponse(
-      c,
-      new AppError(errorCodes.NOT_FOUND, "엔드포인트를 찾을 수 없습니다.", 404),
-    );
+  // notFound/onError 공통 처리 — 내부 오류는 코드/메시지를 숨기고 안정적인 코드만 반환한다 (§15).
+  attachErrorHandling(app, {
+    notFoundCode: errorCodes.NOT_FOUND,
+    notFoundMessage: "엔드포인트를 찾을 수 없습니다.",
+    internalErrorCode: errorCodes.INTERNAL_ERROR,
+    internalErrorMessage: "서버 내부 오류가 발생했습니다.",
+    onUnhandledError: (err) => console.error(`[myportal] unhandled error:`, err),
   });
 
   // 세션 인증은 여기서 한 번만 적용한다.

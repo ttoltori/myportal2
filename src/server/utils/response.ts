@@ -1,34 +1,4 @@
-import type { Context } from "hono";
-import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { getRequestId } from "../middleware/request-id";
-import { AppError } from "../errors/error-codes";
-
-export function success<T>(
-  c: Context,
-  data: T,
-  status: ContentfulStatusCode = 200,
-) {
-  return c.json(
-    {
-      success: true as const,
-      data,
-      meta: { requestId: getRequestId(c) },
-    },
-    status,
-  );
-}
-
-export function error(c: Context, err: AppError) {
-  return c.json(
-    {
-      success: false as const,
-      error: {
-        code: err.code,
-        message: err.message,
-        details: err.details ?? null,
-      },
-      meta: { requestId: getRequestId(c) },
-    },
-    err.statusCode as ContentfulStatusCode,
-  );
-}
+// 응답 envelope(success/error/paginated)은 여러 서비스에서 반복되던 패턴이라
+// @ttoltori/hono-api-kit으로 공통화했다. 이 파일은 기존 import 경로(../utils/response)를
+// 유지하기 위한 재노출(re-export)이다.
+export { success, error, paginated } from "@ttoltori/hono-api-kit";

@@ -20,6 +20,7 @@
     "@myportal/myportal-api-client": "workspace:*",
     "@ttoltori/api-client-core": "workspace:*",
     "@ttoltori/database": "workspace:*",
+    "@ttoltori/hono-api-kit": "workspace:*",
     "hono": "^4.6.0",
     "linkedom": "^0.18.0",
     "next": "^15.1.0",
