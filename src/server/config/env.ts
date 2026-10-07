@@ -11,15 +11,23 @@ function int(v: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+// 빈 문자열로 설정된 변수도 "미설정"으로 간주해 기본값을 쓴다.
+// (.env.example을 그대로 복사하면 `CRAWL_USER_AGENT=`처럼 빈 값이 들어가는데,
+// ?? 연산자는 빈 문자열을 통과시켜 빈 User-Agent 헤더로 요청이 나가고
+// WAF가 이를 봇으로 차단(403)하는 사고를 방지하기 위함이다.)
+const appBaseUrl = (process.env.APP_BASE_URL ?? "http://localhost:3001")
+  .trim()
+  .replace(/\/+$/, "");
+const crawlUserAgent =
+  (process.env.CRAWL_USER_AGENT ?? "").trim() ||
+  `myportal-bot/0.1 (+${appBaseUrl})`;
+
 export const env = {
   databaseUrl: process.env.DATABASE_URL ?? "",
   supabaseUrl: process.env.SUPABASE_URL ?? "",
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? "",
-  appBaseUrl: (process.env.APP_BASE_URL ?? "http://localhost:3001").replace(
-    /\/+$/,
-    "",
-  ),
-  logLevel: process.env.LOG_LEVEL ?? "info",
+  appBaseUrl,
+  logLevel: process.env.LOG_LEVEL || "info",
   isProduction: process.env.NODE_ENV === "production",
 
   // 쉼표 구분 허용 이메일 목록. 비어 있으면 전체 허용.
@@ -32,16 +40,16 @@ export const env = {
   sessionTtlDays: int(process.env.SESSION_TTL_DAYS, 30),
 
   internalApiSecret: process.env.INTERNAL_API_SECRET ?? "",
-  crawlUserAgent:
-    process.env.CRAWL_USER_AGENT ??
-    `myportal-bot/0.1 (+${process.env.APP_BASE_URL ?? "http://localhost:3001"})`,
+  crawlUserAgent,
 
   llmApiBase: process.env.LLM_API_BASE ?? "",
   llmApiKey: process.env.LLM_API_KEY ?? "",
   llmModel: process.env.LLM_MODEL ?? "",
 
   smtpUrl: process.env.SMTP_URL ?? "",
-  mailFrom: process.env.MAIL_FROM ?? "myportal <no-reply@myportal.local>",
+  mailFrom:
+    (process.env.MAIL_FROM ?? "").trim() ||
+    "myportal <no-reply@myportal.local>",
 };
 
 export function validateEnv(): void {
