@@ -13,6 +13,9 @@ export interface CrawlSpec {
   feedUrl?: string;
   itemSelector?: string;
   fields?: Record<string, FieldSelector>;
+  // 사용자가 지정한 '목록 항목 힌트' — 스펙과 함께 저장돼
+  // 스펙 재생성/self-repair 시 같은 영역을 다시 찾는 데 사용한다.
+  hint?: string;
 }
 
 export interface ExtractedRow {
@@ -163,18 +166,51 @@ function extractItemList(
 
 const ITEM_TAGS = "li, article, tr, dd, div, p";
 
+// 네비게이션·배너 등 "목록이 아닌" 영역을 식별하는 클래스/id 토큰.
+// class·id 값을 [\s_.-]로 나눠 토큰 단위로 비교하므로
+// menu-area, ms-mbnr-sd, list-navi 같은 합성 이름에도 매칭된다.
+const NOISE_TOKENS = new Set([
+  "gnb", "lnb", "snb", "nav", "navi", "navbar", "navigation",
+  "menu", "menus", "menubar", "sidebar", "aside",
+  "toolbar", "breadcrumb", "breadcrumbs", "paging", "paginate", "pagination",
+  "quick", "banner", "banners", "bnr", "mbnr",
+  "slider", "sliders", "slide", "slides", "swiper", "carousel", "rolling",
+  "visual", "topbar", "util", "utils", "header", "footer",
+  "search", "cate", "login", "join", "share", "sns",
+]);
+
+// 앵커 안 장식용(배지/아이콘) 자식의 텍스트는 제목에서 제외하는 토큰.
+// 예: <a>공모전명 <span class="stat spec">SPECIAL</span></a>
+const BADGE_TOKENS = new Set([
+  "badge", "badges", "stat", "stats", "ico", "icon", "icons",
+  "flag", "flags", "sticker", "stickers", "chip", "chips",
+  "label", "labels", "mark", "new", "hot",
+]);
+
+function hasToken(el: Element, tokens: Set<string>): boolean {
+  const attr = `${el.getAttribute("class") ?? ""} ${el.getAttribute("id") ?? ""}`;
+  for (const tok of attr.toLowerCase().split(/[\s_.-]+/)) {
+    if (tok && tokens.has(tok.replace(/\d+$/, ""))) return true;
+  }
+  return false;
+}
+
 interface Bucket {
-  signature: string;
   itemSelector: string;
   elements: Element[];
+  titleLen: number;
 }
 
 // 목록 패턴: 같은 부모 아래 같은 태그의 자식이 3개 이상 반복되고
 // 각 자식이 링크를 포함하면 목록으로 본다.
+// 아이템은 클래스가 아닌 태그명으로 묶는다 — li.top/li.bg처럼
+// 클래스 변형으로 같은 목록이 여러 버킷으로 쪼개지는 것을 방지하기 위함.
+// hint가 주어지면 그 문자열을 포함하는 버킷을 먼저 시도한다.
 export function generateSpec(
   html: string,
   pageUrl: string,
-): { spec: CrawlSpec; rows: ExtractedRow[] } | null {
+  hint?: string,
+): { spec: CrawlSpec; rows: ExtractedRow[]; hintMatched: boolean } | null {
   const { document } = parseHTML(html);
   stripNoise(document);
 
@@ -184,30 +220,88 @@ export function generateSpec(
     if (!anchor) continue;
     const parent = el.parentElement;
     if (!parent) continue;
-    const signature = `${parentTagKey(parent)} > ${tagKey(el)}`;
-    const itemSelector = `${parentSelector(parent)} > ${selectorFor(el)}`;
-    let bucket = buckets.get(signature);
+    const itemSelector = `${parentSelector(parent)} > ${el.tagName.toLowerCase()}`;
+    let bucket = buckets.get(itemSelector);
     if (!bucket) {
-      bucket = { signature, itemSelector, elements: [] };
-      buckets.set(signature, bucket);
+      bucket = { itemSelector, elements: [], titleLen: 0 };
+      buckets.set(itemSelector, bucket);
     }
     bucket.elements.push(el);
+    bucket.titleLen += anchorTitle(anchor).length;
   }
 
+  // 점수 = 항목 수 × 평균 제목 길이(상한 40).
+  // 개수만 비교하면 사이드바 카테고리 메뉴처럼 "짧은 라벨이 많이 반복되는"
+  // 네비게이션이 본문 목록보다 높게 평가되는 문제가 있다.
   const ranked = [...buckets.values()]
     .filter((b) => b.elements.length >= 3)
-    .sort((a, b) => b.elements.length - a.elements.length);
+    .sort((a, b) => bucketScore(b) - bucketScore(a));
 
-  for (const bucket of ranked) {
+  const hinted = hint ? findHintedBucket(document, buckets, hint) : null;
+  const ordered = hinted
+    ? [hinted, ...ranked.filter((b) => b !== hinted)]
+    : ranked;
+
+  for (const bucket of ordered) {
     const spec: CrawlSpec = {
       strategy: "html",
       itemSelector: bucket.itemSelector,
       fields: {},
     };
     const rows = applyDomSpec(document, spec, pageUrl);
-    if (rows.length >= 3) return { spec, rows };
+    if (rows.length >= 3) {
+      if (hint) spec.hint = hint;
+      return { spec, rows, hintMatched: bucket === hinted };
+    }
   }
   return null;
+}
+
+// 힌트 문자열을 포함하는 가장 안쪽 요소를 찾아,
+// 그 요소의 조상 중 버킷 아이템에 해당하는 가장 가까운 버킷을 반환한다.
+// contains로 비교하면 body > div 같은 페이지 래퍼가 먼저 걸리므로
+// 조상 체인에서 첫 번째로 등장하는 아이템 요소를 선택해야 한다.
+function findHintedBucket(
+  document: Document,
+  buckets: Map<string, Bucket>,
+  hint: string,
+): Bucket | null {
+  const needle = hint.replace(/\s+/g, " ").trim();
+  if (needle.length < 2) return null;
+  // 가장 안쪽(깊은) 요소가 항목 내부를 가장 정확히 가리킨다.
+  let best: Element | null = null;
+  let bestDepth = -1;
+  for (const el of document.querySelectorAll("*")) {
+    const t = (el.textContent ?? "").replace(/\s+/g, " ");
+    if (!t.includes(needle)) continue;
+    let depth = 0;
+    for (let p = el.parentElement; p; p = p.parentElement) depth++;
+    if (depth > bestDepth) {
+      bestDepth = depth;
+      best = el;
+    }
+  }
+  if (!best) return null;
+  const owner = new Map<Element, Bucket>();
+  for (const bucket of buckets.values()) {
+    for (const el of bucket.elements) owner.set(el, bucket);
+  }
+  // 힌트 요소의 조상은 여러 버킷에 속할 수 있다 — 예: a < div.tit < li.
+  // li.bg > div(필드 단위)보다 ul.list > li(행 단위)가 넓은 목록이므로
+  // 조상 체인에 걸린 모든 버킷 중 점수(항목 수 × 평균 제목 길이)가
+  // 가장 높은 것을 고른다.
+  let picked: Bucket | null = null;
+  for (let node: Element | null = best; node; node = node.parentElement) {
+    const bucket = owner.get(node);
+    if (bucket && (!picked || bucketScore(bucket) > bucketScore(picked))) {
+      picked = bucket;
+    }
+  }
+  return picked;
+}
+
+function bucketScore(b: Bucket): number {
+  return b.elements.length * Math.min(b.titleLen / b.elements.length, 40);
 }
 
 function stripNoise(document: Document): void {
@@ -215,13 +309,42 @@ function stripNoise(document: Document): void {
     "script",
     "style",
     "noscript",
-    "header nav",
+    "template",
+    "iframe",
+    "nav",
+    "header",
     "footer",
+    "aside",
+    "form",
     "[role='navigation']",
+    "[role='banner']",
+    "[role='contentinfo']",
+    "[role='search']",
     "[aria-hidden='true']",
   ]) {
     for (const el of document.querySelectorAll(sel)) el.remove();
   }
+  // nav/menu/banner 계열 클래스나 id를 가진 컨테이너 제거
+  for (const el of [...document.querySelectorAll("[class],[id]")]) {
+    if (hasToken(el, NOISE_TOKENS)) el.remove();
+  }
+}
+
+// 앵커의 제목 텍스트. 배지/아이콘 계열 자식 요소의 텍스트는 제외한다.
+function anchorTitle(a: HTMLAnchorElement): string {
+  let out = "";
+  const walk = (node: ChildNode) => {
+    if (node.nodeType === 3) {
+      out += node.textContent ?? "";
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    const el = node as Element;
+    if (hasToken(el, BADGE_TOKENS)) return;
+    for (const c of el.childNodes) walk(c);
+  };
+  for (const c of a.childNodes) walk(c);
+  return out.replace(/\s+/g, " ").trim();
 }
 
 // 요소 안에서 '목록 항목 제목'처럼 보이는 주요 앵커 하나를 고른다.
@@ -229,7 +352,7 @@ function pickMainAnchor(el: Element): HTMLAnchorElement | null {
   let best: HTMLAnchorElement | null = null;
   let bestLen = 0;
   for (const a of el.querySelectorAll("a[href]")) {
-    const t = a.textContent?.trim() ?? "";
+    const t = anchorTitle(a as HTMLAnchorElement);
     if (t.length > bestLen) {
       best = a as HTMLAnchorElement;
       bestLen = t.length;
@@ -241,24 +364,27 @@ function pickMainAnchor(el: Element): HTMLAnchorElement | null {
   return best;
 }
 
-function tagKey(el: Element): string {
-  const cls = (el.getAttribute("class") ?? "").trim().split(/\s+/)[0];
-  return cls ? `${el.tagName.toLowerCase()}.${cls}` : el.tagName.toLowerCase();
-}
-
-function parentTagKey(el: Element): string {
-  return tagKey(el);
-}
-
 function selectorFor(el: Element): string {
   const cls = (el.getAttribute("class") ?? "").trim().split(/\s+/)[0];
   return cls ? `${el.tagName.toLowerCase()}.${cssEscape(cls)}` : el.tagName.toLowerCase();
 }
 
+// 클래스/id가 없는 범용 태그(예: 그냥 ul)는 셀렉터가 너무 넓어지므로
+// 가장 가까운 식별 가능한 조상으로 한정한다.
 function parentSelector(el: Element): string {
   const id = el.getAttribute("id");
   if (id) return `#${cssEscape(id)}`;
-  return selectorFor(el);
+  const sel = selectorFor(el);
+  if (sel.includes(".")) return sel;
+  let anc = el.parentElement;
+  while (anc) {
+    const aid = anc.getAttribute("id");
+    if (aid) return `#${cssEscape(aid)} ${sel}`;
+    const c = (anc.getAttribute("class") ?? "").trim().split(/\s+/)[0];
+    if (c) return `${anc.tagName.toLowerCase()}.${cssEscape(c)} ${sel}`;
+    anc = anc.parentElement;
+  }
+  return sel;
 }
 
 function cssEscape(s: string): string {
@@ -313,7 +439,7 @@ function applyDomSpec(
   for (const el of items.slice(0, 100)) {
     const anchor = pickMainAnchor(el);
     if (!anchor) continue;
-    const title = anchor.textContent?.trim() ?? "";
+    const title = anchorTitle(anchor);
     const link = absolutize(anchor.getAttribute("href") ?? "", pageUrl);
     const timeEl = el.querySelector("time");
     const dateRaw =

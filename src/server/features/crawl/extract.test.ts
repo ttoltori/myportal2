@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applySpec,
   discoverFeedUrl,
+  generateSpec,
   looksLikeFeed,
   parseDate,
   parseFeed,
@@ -129,5 +130,89 @@ describe("applySpec", () => {
     expect(rows[0].publishedAt).toContain("2025-09-15");
     expect(rows[0].attrs.deadline).toBe("2025-09-30");
     expect(rows[1].attrs.deadline).toBeUndefined();
+  });
+});
+
+describe("generateSpec", () => {
+  // wevity.com 같은 게시판 페이지: 좌측 카테고리 메뉴가 항목 수는 많지만
+  // 본문 목록(긴 제목)이 선택되어야 한다.
+  const BOARD_HTML = `<html><body>
+    <div id="gnb"><div class="menu-area"><ul class="m-menus">
+      ${Array.from({ length: 12 }, (_, i) => `<li><a href="?c=find&cidx=${i}">카테고리${i}</a></li>`).join("")}
+    </ul></div></div>
+    <div class="aside"><ul class="aside-cat">
+      ${Array.from({ length: 15 }, (_, i) => `<li><a href="?c=find&gub=${i}">분야${i}</a></li>`).join("")}
+    </ul></div>
+    <div class="content"><div class="ms-list"><ul class="list">
+      ${[1, 2, 3, 4, 5]
+        .map(
+          (i) => `<li class="${i % 2 ? "bg" : "top"}">
+            <div class="tit"><a href="?c=find&gbn=view&ix=${i}">제${i}회 전국 아이디어 공모전 모집 안내</a></div>
+          </li>`,
+        )
+        .join("")}
+    </ul></div></div>
+  </body></html>`;
+
+  it("메뉴가 아니라 본문 목록을 선택한다", () => {
+    const gen = generateSpec(BOARD_HTML, "https://x.kr/?c=find");
+    expect(gen).not.toBeNull();
+    expect(gen!.spec.itemSelector).toBe("ul.list > li");
+    expect(gen!.rows).toHaveLength(5);
+    expect(gen!.rows[0].link).toBe("https://x.kr/?c=find&gbn=view&ix=1");
+    expect(gen!.rows[0].title).toContain("아이디어 공모전");
+  });
+
+  it("클래스 변형(li.top/li.bg)도 같은 버킷으로 묶는다", () => {
+    const gen = generateSpec(BOARD_HTML, "https://x.kr/");
+    expect(gen!.rows.length).toBe(5); // top/bg 섞인 5개 전부
+  });
+
+  it("nav/aside/menu 클래스 컨테이너는 노이즈로 제거한다", () => {
+    const gen = generateSpec(BOARD_HTML, "https://x.kr/");
+    // 메뉴 링크(cidx/gub)가 결과에 섞이면 안 된다
+    expect(gen!.rows.every((r) => r.link?.includes("gbn=view"))).toBe(true);
+  });
+
+  it("힌트 문자열이 포함된 영역을 우선 선택한다", () => {
+    // 메뉴 버킷이 더 크지만 힌트가 본문 목록을 가리키면 본문이 선택되어야 한다
+    const html = `<html><body>
+      <ul class="items">
+        ${[1, 2, 3, 4, 5].map((i) => `<li><a href="/m/${i}">사이드 메뉴 항목 번호${i}입니다</a></li>`).join("")}
+      </ul>
+      <ul class="news">
+        ${[1, 2, 3].map((i) => `<li><a href="/n/${i}">공고 ${i}번 안내드립니다</a></li>`).join("")}
+      </ul>
+    </body></html>`;
+    const gen = generateSpec(html, "https://x.kr/", "공고 2번");
+    expect(gen).not.toBeNull();
+    expect(gen!.hintMatched).toBe(true);
+    expect(gen!.spec.itemSelector).toBe("ul.news > li");
+    expect(gen!.spec.hint).toBe("공고 2번");
+    expect(gen!.rows).toHaveLength(3);
+  });
+
+  it("힌트를 페이지에서 찾지 못하면 자동 추정으로 진행한다", () => {
+    const html = `<html><body><ul class="news">
+      ${[1, 2, 3].map((i) => `<li><a href="/n/${i}">공고 ${i}번 안내드립니다</a></li>`).join("")}
+    </ul></body></html>`;
+    const gen = generateSpec(html, "https://x.kr/", "존재하지 않는 문자열");
+    expect(gen).not.toBeNull();
+    expect(gen!.hintMatched).toBe(false);
+    expect(gen!.spec.itemSelector).toBe("ul.news > li");
+  });
+
+  it("앵커 안 배지 텍스트는 제목에서 제외한다", () => {
+    const html = `<html><body><ul class="list">
+      ${[1, 2, 3]
+        .map(
+          (i) => `<li><div class="tit">
+            <a href="/v/${i}">공모전 제목 ${i}번<span class="stat spec">SPECIAL</span><span class="stat idea">IDEA</span></a>
+          </div></li>`,
+        )
+        .join("")}
+    </ul></body></html>`;
+    const gen = generateSpec(html, "https://x.kr/");
+    expect(gen!.rows[0].title).toBe("공모전 제목 1번");
   });
 });

@@ -86,8 +86,9 @@ async function repairSpec(
   sourceId: string,
   html: string,
   finalUrl: string,
+  hint?: string,
 ): Promise<{ spec: CrawlSpec; rows: ExtractedRow[] } | null> {
-  const regenerated = generateSpec(html, finalUrl);
+  const regenerated = generateSpec(html, finalUrl, hint);
   if (!regenerated || regenerated.rows.length === 0) return null;
 
   const db = getDb();
@@ -273,7 +274,12 @@ export async function collectSource(
         source.fetch_strategy === "html" &&
         source.consecutive_failures >= EMPTY_RUNS_BEFORE_REPAIR
       ) {
-        const repaired = await repairSpec(sourceId, page.body, page.finalUrl);
+        const repaired = await repairSpec(
+          sourceId,
+          page.body,
+          page.finalUrl,
+          spec?.hint,
+        );
         if (repaired) extracted = repaired.rows;
       }
 
@@ -484,6 +490,7 @@ async function runBaseline(
   input: { url: string; fetchStrategy: string; spec?: CrawlSpec | null; previewRows?: ExtractedRow[] },
 ): Promise<number> {
   let rows: ExtractedRow[] = input.previewRows ?? [];
+  const hint = input.spec?.hint;
 
   if (rows.length === 0) {
     // 분석 시 미리보기가 없으면 라이브 수집으로 기준선을 만든다.
@@ -497,7 +504,7 @@ async function runBaseline(
       } else if (input.spec) {
         rows = applySpec(page.body, input.spec, page.finalUrl);
       } else {
-        const gen = generateSpec(page.body, page.finalUrl);
+        const gen = generateSpec(page.body, page.finalUrl, hint);
         if (gen) {
           rows = gen.rows;
           await tx.query(sourcesSql.insertSpec, [

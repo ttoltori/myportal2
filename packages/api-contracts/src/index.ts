@@ -210,6 +210,9 @@ export type AnalyzeStep = z.infer<typeof analyzeStepSchema>;
 
 export const analyzeRequestSchema = z.object({
   url: z.string().min(1).max(2048),
+  // 목록에 포함되어야 하는 항목의 텍스트 일부.
+  // 자동 추정이 엉뚱한 영역(메뉴 등)을 잡을 때 사용자가 직접 지정한다.
+  hint: z.string().trim().min(2).max(500).optional(),
 });
 export type AnalyzeRequest = z.infer<typeof analyzeRequestSchema>;
 
@@ -251,6 +254,10 @@ export const createSourceRequestSchema = z.object({
   fields: z.array(sourceFieldSchema),
   fetchStrategy: fetchStrategySchema,
   linkOnly: z.boolean().default(false),
+  // 분석 단계에서 확정된 스펙/미리보기를 그대로 전달한다.
+  // 없으면 서버가 등록 시점에 다시 추출한다(분석 화면과 다른 결과가 나올 수 있음).
+  spec: z.unknown().nullable().optional(),
+  previewRows: z.array(z.record(z.unknown())).optional(),
 });
 export type CreateSourceRequest = z.infer<typeof createSourceRequestSchema>;
 

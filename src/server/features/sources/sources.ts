@@ -2,7 +2,7 @@ import type { SourceDetail, Subscription } from "@myportal/api-contracts";
 import { getDb } from "../../config/db";
 import { AppError, errorCodes } from "../../errors/error-codes";
 import { fetchPage } from "../crawl/fetcher";
-import { generateSpec } from "../crawl/extract";
+import { generateSpec, type CrawlSpec } from "../crawl/extract";
 import { mapItem, type ItemRow } from "../desk/desk";
 import { deskSql } from "../desk/desk.sql";
 import { collectSource } from "../crawl/collector";
@@ -176,6 +176,7 @@ export async function collectNow(
 }
 
 // 수동 스펙 재생성: 현재 페이지를 다시 받아 DOM 휴리스틱으로 새 버전을 만든다.
+// 기존 스펙에 저장된 힌트(hint)가 있으면 같은 영역을 다시 찾도록 재사용한다.
 export async function rebuildSpec(
   userId: string,
   sourceId: string,
@@ -183,8 +184,16 @@ export async function rebuildSpec(
   const { source } = await findSubscribedSource(userId, sourceId);
   const db = getDb();
 
+  const { rows: activeSpecRows } = await db.query<{ spec: string }>(
+    sourcesSql.latestActiveSpec,
+    [sourceId],
+  );
+  const storedHint = activeSpecRows[0]
+    ? (JSON.parse(activeSpecRows[0].spec) as CrawlSpec).hint
+    : undefined;
+
   const page = await fetchPage(String(source.url));
-  const generated = generateSpec(page.body, page.finalUrl);
+  const generated = generateSpec(page.body, page.finalUrl, storedHint);
   if (!generated) {
     throw new AppError(
       errorCodes.EXTRACTION_FAILED,

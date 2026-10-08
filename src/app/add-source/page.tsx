@@ -60,6 +60,7 @@ const STAMP_FOR: Record<string, string> = {
 export default function AddSourcePage() {
   const router = useRouter();
   const [url, setUrl] = useState("");
+  const [hint, setHint] = useState("");
   const [log, setLog] = useState<LogLine[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState<AnalyzeResult | null>(null);
@@ -107,7 +108,10 @@ export default function AddSourcePage() {
     setSaved(null);
     setLog([{ time: logTime(), label: "분석 시작", status: "running", detail: targetUrl }]);
     try {
-      const res = await api.sources.analyze({ url: targetUrl });
+      const res = await api.sources.analyze({
+        url: targetUrl,
+        hint: hint.trim() || undefined,
+      });
       setResult(res);
       setLog(res.steps.map((s) => ({ time: logTime(), ...s })));
       if (res.outcome === "list" && res.preview) {
@@ -169,6 +173,9 @@ export default function AddSourcePage() {
           ? "link"
           : (result?.preview?.fetchStrategy ?? "html"),
         linkOnly,
+        // 분석 시 확정된 스펙/미리보기를 그대로 전달해 저장 시 재추출을 방지한다.
+        spec: result?.preview?.spec ?? null,
+        previewRows: result?.preview?.rows,
       });
       setSaved(res.subscriptionId);
       showToast(
@@ -230,6 +237,24 @@ export default function AddSourcePage() {
                   </button>
                 </span>
               ))}
+            </div>
+
+            <label
+              className="font-mono text-ink-2"
+              style={{ display: "block", marginTop: 14, marginBottom: 2, fontSize: 11 }}
+            >
+              목록 항목 힌트 (선택)
+            </label>
+            <input
+              className="input-line"
+              style={{ fontSize: 13 }}
+              placeholder="목록에 표시되는 항목 텍스트 일부 — 예: 2026 한국외식산업연구원 외식경영스타 아이디어 공모전"
+              value={hint}
+              onChange={(e) => setHint(e.target.value)}
+            />
+            <div className="font-mono text-ink-2" style={{ fontSize: 11, marginTop: 2 }}>
+              자동 분석이 메뉴 등 엉뚱한 영역을 잡을 때, 실제 목록 항목의 텍스트를
+              붙여넣으면 그 영역을 기준으로 추출합니다.
             </div>
 
             <div className="mt-3 flex items-center gap-3">

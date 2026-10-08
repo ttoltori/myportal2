@@ -93,13 +93,38 @@ interface AnalyzeOutcome {
   feedUrl: string | null;
 }
 
-// 페이지에서 목록 추출 전략을 순서대로 시도한다: RSS → JSON-LD → DOM 휴리스틱.
+// 페이지에서 목록 추출 전략을 순서대로 시도한다: (힌트) → RSS → JSON-LD → DOM 휴리스틱.
 async function detectExtraction(
   html: string,
   contentType: string,
   pageUrl: string,
   steps: AnalyzeStep[],
+  hint?: string,
 ): Promise<AnalyzeOutcome | null> {
+  // 사용자가 목록 항목 텍스트를 직접 지정했으면 그 영역을 우선 시도한다.
+  // 명시된 사용자 의도가 자동 추정보다 우선한다.
+  if (hint) {
+    const hinted = generateSpec(html, pageUrl, hint);
+    if (hinted?.hintMatched) {
+      steps.push(
+        step("힌트 영역 선택", "ok", `${hinted.rows.length}개 항목`),
+      );
+      return {
+        spec: hinted.spec,
+        rows: hinted.rows,
+        strategy: "html",
+        feedUrl: null,
+      };
+    }
+    steps.push(
+      step(
+        "힌트 영역 선택",
+        "warn",
+        "힌트 문자열을 포함한 목록을 찾지 못했습니다 — 자동 추정으로 진행",
+      ),
+    );
+  }
+
   if (looksLikeFeed(contentType, html)) {
     const rows = parseFeed(html, pageUrl);
     if (rows.length > 0) {
@@ -195,7 +220,10 @@ function parentCandidates(html: string, pageUrl: string): ParentCandidate[] {
   return candidates.slice(0, 5);
 }
 
-export async function analyzeUrl(rawUrl: string): Promise<AnalyzeResult> {
+export async function analyzeUrl(
+  rawUrl: string,
+  hint?: string,
+): Promise<AnalyzeResult> {
   const steps: AnalyzeStep[] = [];
   const db = getDb();
 
@@ -292,6 +320,7 @@ export async function analyzeUrl(rawUrl: string): Promise<AnalyzeResult> {
     page.contentType,
     page.finalUrl,
     steps,
+    hint,
   );
 
   if (!outcome) {

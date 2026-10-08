@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { z } from "zod";
 import {
   analyzeRequestSchema,
   createSourceRequestSchema,
@@ -12,20 +11,25 @@ import { createSourceWithBaseline } from "../features/crawl/collector";
 import { collectNow, getSourceDetail, rebuildSpec } from "../features/sources/sources";
 import type { CrawlSpec, ExtractedRow } from "../features/crawl/extract";
 
-// createSourceRequestSchema + 분석 단계에서 넘어온 스펙/미리보기 행
-const createWithSpecSchema = createSourceRequestSchema.extend({
-  spec: z.unknown().nullable().optional(),
-  previewRows: z.array(z.record(z.unknown())).optional(),
-});
+// 분석 미리보기 행({title, link, published, ...attrs})을 ExtractedRow 형태로 변환한다.
+function toExtractedRow(r: Record<string, unknown>): ExtractedRow {
+  const { title, link, published, ...attrs } = r;
+  return {
+    title: String(title ?? ""),
+    link: typeof link === "string" ? link : null,
+    publishedAt: typeof published === "string" ? published : null,
+    attrs,
+  };
+}
 
 export const sourcesRoutes = new Hono()
   .post("/sources/analyze", async (c) => {
     const body = analyzeRequestSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!body.success) throw validationError("유효한 URL을 입력해주세요.", body.error.issues);
-    return success(c, await analyzeUrl(body.data.url));
+    return success(c, await analyzeUrl(body.data.url, body.data.hint));
   })
   .post("/sources", async (c) => {
-    const parsed = createWithSpecSchema.safeParse(await c.req.json().catch(() => ({})));
+    const parsed = createSourceRequestSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) throw validationError("유효하지 않은 요청입니다.", parsed.error.issues);
     const d = parsed.data;
     return success(
@@ -39,7 +43,7 @@ export const sourcesRoutes = new Hono()
         fetchStrategy: d.fetchStrategy,
         linkOnly: d.linkOnly,
         spec: (d.spec as CrawlSpec | null) ?? null,
-        previewRows: (d.previewRows as ExtractedRow[] | undefined) ?? [],
+        previewRows: (d.previewRows ?? []).map(toExtractedRow),
       }),
       201,
     );
