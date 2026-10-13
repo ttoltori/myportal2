@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { api } from "@/lib/api";
 import {
   currentEffectiveTheme,
   formatMastheadDate,
@@ -36,8 +37,18 @@ export interface MastheadMeta {
 
 export function Masthead({ meta }: { meta?: MastheadMeta }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [theme, setTheme] = useState<"dark" | "light">("light");
   const [now, setNow] = useState<Date | null>(null);
+
+  async function logout() {
+    try {
+      await api.auth.logout();
+    } catch {
+      // 세션이 이미 없어도 로그인 화면으로 보낸다.
+    }
+    router.replace("/login");
+  }
 
   useEffect(() => {
     setTheme(currentEffectiveTheme());
@@ -135,6 +146,18 @@ export function Masthead({ meta }: { meta?: MastheadMeta }) {
           >
             {initials}
           </div>
+          <button
+            type="button"
+            className="btn btn-sm shrink-0"
+            onClick={() => void logout()}
+            title={
+              meta?.userEmail
+                ? `${meta.userEmail} — 로그아웃`
+                : "로그아웃"
+            }
+          >
+            로그아웃
+          </button>
         </div>
       </div>
     </header>

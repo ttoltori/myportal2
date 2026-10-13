@@ -44,6 +44,8 @@ export const deskSql = {
     order by created_at
   `,
   // mute 규칙에 걸린 항목은 데스크에서 숨긴다.
+  // is_baseline 항목(등록 시점의 기존 게시물)도 목록에 보여준다 — 등록자에게는
+  // 이미 '읽음'으로 표시되어 있어 신규 카운트에는 잡히지 않는다.
   items: `
     select i.id, i.source_id, i.title, i.url, i.published_at, i.collected_at,
            i.excerpt, i.attrs, i.is_baseline, i.cluster_id,
@@ -58,8 +60,7 @@ export const deskSql = {
     left join myportal.item_rule_matches rm
       on rm.item_id = i.id and rm.user_id = $1
     left join myportal.keyword_rules kr on kr.id = rm.rule_id
-    where i.is_baseline = false
-      and coalesce(rm.action, '') <> 'mute'
+    where coalesce(rm.action, '') <> 'mute'
     order by i.collected_at desc
     limit $2
   `,

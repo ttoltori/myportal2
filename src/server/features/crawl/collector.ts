@@ -254,10 +254,13 @@ export async function collectSource(
     } else {
       const { rows: specRows } = await db.query<{
         version: number;
-        spec: string;
+        spec: unknown;
       }>(sourcesSql.latestActiveSpec, [sourceId]);
+      // pg는 jsonb를 이미 파싱된 객체로 반환하므로 문자열일 때만 JSON.parse한다.
       const spec = specRows[0]
-        ? (JSON.parse(specRows[0].spec) as CrawlSpec)
+        ? (typeof specRows[0].spec === "string"
+            ? JSON.parse(specRows[0].spec)
+            : specRows[0].spec) as CrawlSpec
         : null;
 
       let extracted = await extractRows(
@@ -451,9 +454,12 @@ export async function createSourceWithBaseline(
     // 신규 소스면 기준선 수집: 기존 게시물을 '읽음 처리된 과거 데이터'로 밀어 넣는다.
     if (!reused && !input.linkOnly) {
       baselineCount = await runBaseline(tx, sourceId, input);
-      // 기준선 항목은 이 사용자에게 '읽음'으로 표시해 신규 뱃지가 뜨지 않게 한다.
+    }
+    // 구독 시점에 이미 존재하는 항목은 이 사용자에게 '읽음'으로 표시해 신규 뱃지가
+    // 뜨지 않게 한다. 신규 소스는 기준선 항목이, 재사용 소스는 전체 기존 항목이 대상.
+    if (!input.linkOnly) {
       const { rows: baseItems } = await tx.query<{ id: string }>(
-        `select id from myportal.items where source_id = $1 and is_baseline = true`,
+        `select id from myportal.items where source_id = $1`,
         [sourceId],
       );
       for (const it of baseItems) {

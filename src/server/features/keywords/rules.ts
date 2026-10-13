@@ -177,7 +177,7 @@ export async function previewRule(
      left join myportal.item_rule_matches rm
        on rm.item_id = i.id and rm.user_id = $1
      left join myportal.keyword_rules kr on kr.id = rm.rule_id
-     where i.is_baseline = false ${scopeJoin}
+     where true ${scopeJoin}
      order by i.collected_at desc
      limit 400`,
     input.scope === "all" ? [userId] : [userId, input.scopeId],

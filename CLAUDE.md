@@ -715,3 +715,10 @@ ORM, Dependency Injection Container, 대형 백엔드 프레임워크는 기본�
 - 아이콘은 lucide-react 사용, 별도 이미지 다운로드 없이 패키지에서 가져올 것
 - 배경/히어로 이미지가 필요하면 Unsplash API(.env의 UNSPLASH_KEY 사용)로 검색해서 URL 삽입할 것
 - 디자인 시스템 참고가 필요하면 /mnt/skills/frontend-design 규칙을 따를 것
+
+---
+
+## 27. 커밋 메시지
+
+- 커밋 메시지는 항상 한글로 작성한다.
+- "무엇을"보다 "왜" 변경했는지가 드러나게 쓴다.

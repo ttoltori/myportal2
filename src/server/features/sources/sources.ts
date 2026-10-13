@@ -184,13 +184,17 @@ export async function rebuildSpec(
   const { source } = await findSubscribedSource(userId, sourceId);
   const db = getDb();
 
-  const { rows: activeSpecRows } = await db.query<{ spec: string }>(
+  const { rows: activeSpecRows } = await db.query<{ spec: unknown }>(
     sourcesSql.latestActiveSpec,
     [sourceId],
   );
-  const storedHint = activeSpecRows[0]
-    ? (JSON.parse(activeSpecRows[0].spec) as CrawlSpec).hint
-    : undefined;
+  // pg는 jsonb를 이미 파싱된 객체로 반환하므로 문자열일 때만 JSON.parse한다.
+  const storedSpec = activeSpecRows[0]
+    ? (typeof activeSpecRows[0].spec === "string"
+        ? JSON.parse(activeSpecRows[0].spec)
+        : activeSpecRows[0].spec) as CrawlSpec
+    : null;
+  const storedHint = storedSpec?.hint;
 
   const page = await fetchPage(String(source.url));
   const generated = generateSpec(page.body, page.finalUrl, storedHint);

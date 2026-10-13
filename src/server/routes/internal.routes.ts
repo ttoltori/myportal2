@@ -33,7 +33,7 @@ async function crawlTick(c: Context) {
   const db = getDb();
   const { rows: due } = await db.query<{ id: string }>(
     sourcesSql.dueSources,
-    [TICK_BATCH],
+    [TICK_BATCH, false],
   );
   const results: { sourceId: string; newCount: number; result: string }[] = [];
   for (const s of due) {

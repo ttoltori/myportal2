@@ -114,13 +114,14 @@ export const sourcesSql = {
     insert into myportal.manual_actions (user_id, source_id, action)
     values ($1, $2, $3)
   `,
+  // $2 = true면 next_crawl_at을 무시한다 (수동 강제 수집용).
   dueSources: `
     select s.id, s.url, s.normalized_url, s.fetch_strategy, s.feed_url,
            s.etag, s.last_modified, s.interval_minutes, s.consecutive_failures
     from myportal.sources s
     where s.kind = 'list'
       and s.status <> 'pause'
-      and (s.next_crawl_at is null or s.next_crawl_at <= now())
+      and ($2::boolean or s.next_crawl_at is null or s.next_crawl_at <= now())
       and exists (
           select 1 from myportal.subscriptions sub
           where sub.source_id = s.id and sub.paused = false

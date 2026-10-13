@@ -4,16 +4,17 @@ import { mapItem, type ItemRow } from "../desk/desk";
 import { deskSql } from "../desk/desk.sql";
 
 // 범위(scope) 타입 → 해당 사용자에게 보이는 item_id 목록으로 해석한다.
+// is_baseline 항목도 데스크에 보이므로 일괄 읽음 범위에 포함한다.
 const SCOPE_SQL: Record<string, string> = {
   all: `
     select i.id from myportal.items i
     join myportal.subscriptions s on s.source_id = i.source_id
-    where s.user_id = $1 and i.is_baseline = false
+    where s.user_id = $1
   `,
   special: `
     select i.id from myportal.items i
     join myportal.subscriptions s on s.source_id = i.source_id
-    where s.user_id = $1 and i.is_baseline = false
+    where s.user_id = $1
       and i.collected_at > coalesce(
         (select last_visit_at from myportal.user_settings where user_id = $1),
         '1970-01-01'::timestamptz)
@@ -21,7 +22,7 @@ const SCOPE_SQL: Record<string, string> = {
   category: `
     select i.id from myportal.items i
     join myportal.subscriptions s on s.source_id = i.source_id
-    where s.user_id = $1 and i.is_baseline = false
+    where s.user_id = $1
       and (s.category_id = $2 or s.category_id in (
         select c.id from myportal.categories c
         where c.user_id = $1 and (c.id = $2 or c.parent_id = $2
@@ -33,12 +34,12 @@ const SCOPE_SQL: Record<string, string> = {
     select i.id from myportal.items i
     join myportal.subscriptions s on s.source_id = i.source_id
     join myportal.subscription_tags st on st.subscription_id = s.id
-    where s.user_id = $1 and st.tag_id = $2 and i.is_baseline = false
+    where s.user_id = $1 and st.tag_id = $2
   `,
   source: `
     select i.id from myportal.items i
     join myportal.subscriptions s on s.source_id = i.source_id
-    where s.user_id = $1 and s.id = $2 and i.is_baseline = false
+    where s.user_id = $1 and s.id = $2
   `,
 };
 
@@ -177,8 +178,7 @@ export async function searchItems(
      left join myportal.item_rule_matches rm
        on rm.item_id = i.id and rm.user_id = $1
      left join myportal.keyword_rules kr on kr.id = rm.rule_id
-     where i.is_baseline = false
-       and (i.title ilike '%' || $2 || '%' or i.excerpt ilike '%' || $2 || '%')
+     where i.title ilike '%' || $2 || '%' or i.excerpt ilike '%' || $2 || '%'
      order by i.collected_at desc
      limit 50`,
     [userId, q],

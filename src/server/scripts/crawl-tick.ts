@@ -7,14 +7,28 @@ import { sourcesSql } from "../features/sources/sources.sql";
 const BATCH = 20;
 const WATCH_INTERVAL_MS = 60_000;
 
-async function tick(): Promise<void> {
+// force=true면 next_crawl_at 스케줄을 무시하고 구독된 소스를 모두 수집한다.
+async function tick(force: boolean): Promise<void> {
   const db = getDb();
   const { rows: due } = await db.query<{ id: string }>(
     sourcesSql.dueSources,
-    [BATCH],
+    [BATCH, force],
   );
   if (due.length === 0) {
-    console.log(`[crawl-tick] ${new Date().toISOString()} no due sources`);
+    // "왜 안 도는지" 바로 알 수 있도록 구독 소스 수와 다음 예정 시각을 보여준다.
+    const { rows: info } = await db.query<{ n: number; next: string | null }>(
+      `select count(*)::int as n, min(s.next_crawl_at) as next
+       from myportal.sources s
+       where s.kind = 'list' and s.status <> 'pause'
+         and exists (select 1 from myportal.subscriptions sub
+                     where sub.source_id = s.id and sub.paused = false)`,
+    );
+    const n = info[0]?.n ?? 0;
+    const next = info[0]?.next;
+    const hint = n === 0
+      ? "구독된 수집 소스가 없습니다"
+      : `구독 소스 ${n}개 — 다음 예정 ${new Date(String(next)).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })} KST. 즉시 수집하려면 --force`;
+    console.log(`[crawl-tick] ${new Date().toISOString()} no due sources (${hint})`);
     return;
   }
   console.log(`[crawl-tick] ${new Date().toISOString()} ${due.length} due source(s)`);
@@ -32,14 +46,16 @@ async function tick(): Promise<void> {
 
 async function main() {
   const watch = process.argv.includes("--watch");
-  await tick();
+  const force = process.argv.includes("--force") || process.argv.includes("-f");
+  await tick(force);
   if (!watch) {
     await closePool();
     return;
   }
+  // 강제 수집은 첫 틱에만 적용하고 이후는 정상 스케줄을 따른다.
   console.log(`[crawl-tick] watching every ${WATCH_INTERVAL_MS / 1000}s (Ctrl+C to stop)`);
   setInterval(() => {
-    tick().catch((err) => console.error("[crawl-tick] tick failed:", err));
+    tick(false).catch((err) => console.error("[crawl-tick] tick failed:", err));
   }, WATCH_INTERVAL_MS);
 }
 
