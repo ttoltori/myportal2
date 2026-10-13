@@ -139,12 +139,21 @@ NEXT_PUBLIC_API_URL=http://localhost:3001/api
 ### GitHub npm registry 인증
 
 `@ttoltori/*` 패키지를 설치하려면 `GITHUB_TOKEN` 환경변수가 필요하다.
-`.npmrc`에서 GitHub npm registry 인증을 구성한다.
+레지스트리 매핑은 프로젝트 `.npmrc`에, 인증 토큰은 사용자 레벨 `~/.npmrc`에 둔다.
+
+프로젝트 `.npmrc`:
 
 ```text
 @ttoltori:registry=https://npm.pkg.github.com
+```
+
+사용자 레벨 `~/.npmrc`:
+
+```text
 //npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
 ```
+
+pnpm은 보안상 프로젝트 `.npmrc`의 환경변수를 확장하지 않으므로 토큰을 프로젝트 `.npmrc`에 두면 경고가 출력되고 인증이 무시된다.
 
 ---
 
