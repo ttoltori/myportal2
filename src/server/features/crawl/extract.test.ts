@@ -215,4 +215,76 @@ describe("generateSpec", () => {
     const gen = generateSpec(html, "https://x.kr/");
     expect(gen!.rows[0].title).toBe("공모전 제목 1번");
   });
+
+  // thinkcontest.com 같은 JS 클릭 목록: tr에 앵커가 없고 data-* 키만 있다.
+  const JS_LIST_HTML = `<html><body>
+    <a href="https://x.kr/contest/view.do?contest_pk=999">이벤트 배너</a>
+    <table><tbody id="dataList">
+      ${[1, 2, 3]
+        .map(
+          (i) => `<tr class="contentitem" style="cursor:pointer" data-contest_pk="${1000 + i}">
+            <td class="titTd"><div class="tit">제${i}회 전국 웹소설 공모전 모집</div></td>
+            <td>주최사${i}</td><td>2025.10.${10 + i}</td>
+          </tr>`,
+        )
+        .join("")}
+    </tbody></table>
+  </body></html>`;
+
+  it("앵커 없는 JS 클릭 목록도 항목으로 추출한다", () => {
+    const gen = generateSpec(JS_LIST_HTML, "https://x.kr/contest");
+    expect(gen).not.toBeNull();
+    expect(gen!.spec.itemSelector).toBe("#dataList > tr");
+    expect(gen!.rows).toHaveLength(3);
+    expect(gen!.rows[0].title).toContain("웹소설 공모전");
+  });
+
+  it("data-* 키를 페이지의 URL 템플릿에 대입해 링크를 복원한다", () => {
+    const gen = generateSpec(JS_LIST_HTML, "https://x.kr/contest");
+    expect(gen!.rows[0].link).toBe(
+      "https://x.kr/contest/view.do?contest_pk=1001",
+    );
+    // applySpec(수집 경로)에서도 동일하게 복원되어야 한다
+    const rows = applySpec(
+      JS_LIST_HTML,
+      { strategy: "html", itemSelector: "#dataList > tr", fields: {} },
+      "https://x.kr/contest",
+    );
+    expect(rows[1].link).toBe("https://x.kr/contest/view.do?contest_pk=1002");
+  });
+
+  it("data-href 속성의 URL을 직접 링크로 사용한다", () => {
+    const html = `<html><body><ul class="lst">
+      ${[1, 2, 3]
+        .map(
+          (i) => `<li data-href="/post/${i}" style="cursor:pointer"><div class="tit">게시글 제목 ${i}번입니다</div></li>`,
+        )
+        .join("")}
+    </ul></body></html>`;
+    const gen = generateSpec(html, "https://x.kr/");
+    expect(gen).not.toBeNull();
+    expect(gen!.rows[0].link).toBe("https://x.kr/post/1");
+  });
+
+  it("힌트가 앵커리스 목록을 가리키면 해당 목록을 선택한다", () => {
+    const html = `<html><body>
+      <ul class="snb">
+        ${[1, 2, 3, 4, 5].map((i) => `<li><a href="/m/${i}">서브 메뉴 ${i}번입니다</a></li>`).join("")}
+      </ul>
+      <a href="https://x.kr/contest/view.do?contest_pk=999">배너</a>
+      <table><tbody id="dataList">
+        ${[1, 2, 3]
+          .map(
+            (i) => `<tr style="cursor:pointer" data-contest_pk="${2000 + i}">
+              <td><div class="tit">제${i}회 웹소설 공모전 모집 안내</div></td>
+            </tr>`,
+          )
+          .join("")}
+      </tbody></table>
+    </body></html>`;
+    const gen = generateSpec(html, "https://x.kr/", "웹소설 공모전");
+    expect(gen).not.toBeNull();
+    expect(gen!.hintMatched).toBe(true);
+    expect(gen!.spec.itemSelector).toBe("#dataList > tr");
+  });
 });

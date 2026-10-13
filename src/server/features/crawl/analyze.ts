@@ -7,6 +7,7 @@ import type {
 import { getDb } from "../../config/db";
 import { AppError, errorCodes } from "../../errors/error-codes";
 import { fetchPage } from "./fetcher";
+import { renderPage } from "./render";
 import { robotsAllowed } from "./robots";
 import {
   applySpec,
@@ -93,6 +94,13 @@ interface AnalyzeOutcome {
   feedUrl: string | null;
 }
 
+interface Detection {
+  outcome: AnalyzeOutcome | null;
+  // 힌트가 지정됐는데 그 문자열을 포함한 목록을 못 찾은 경우 true —
+  // JS 렌더링 재시도의 트리거로 사용한다.
+  hintMissed: boolean;
+}
+
 // 페이지에서 목록 추출 전략을 순서대로 시도한다: (힌트) → RSS → JSON-LD → DOM 휴리스틱.
 async function detectExtraction(
   html: string,
@@ -100,7 +108,7 @@ async function detectExtraction(
   pageUrl: string,
   steps: AnalyzeStep[],
   hint?: string,
-): Promise<AnalyzeOutcome | null> {
+): Promise<Detection> {
   // 사용자가 목록 항목 텍스트를 직접 지정했으면 그 영역을 우선 시도한다.
   // 명시된 사용자 의도가 자동 추정보다 우선한다.
   if (hint) {
@@ -110,10 +118,13 @@ async function detectExtraction(
         step("힌트 영역 선택", "ok", `${hinted.rows.length}개 항목`),
       );
       return {
-        spec: hinted.spec,
-        rows: hinted.rows,
-        strategy: "html",
-        feedUrl: null,
+        outcome: {
+          spec: hinted.spec,
+          rows: hinted.rows,
+          strategy: "html",
+          feedUrl: null,
+        },
+        hintMissed: false,
       };
     }
     steps.push(
@@ -130,10 +141,13 @@ async function detectExtraction(
     if (rows.length > 0) {
       steps.push(step("피드 형식 감지", "ok", `${rows.length}개 항목`));
       return {
-        spec: { strategy: "rss" },
-        rows,
-        strategy: "rss",
-        feedUrl: pageUrl,
+        outcome: {
+          spec: { strategy: "rss" },
+          rows,
+          strategy: "rss",
+          feedUrl: pageUrl,
+        },
+        hintMissed: Boolean(hint),
       };
     }
   }
@@ -149,10 +163,13 @@ async function detectExtraction(
             step("RSS/Atom 피드 발견", "ok", `${rows.length}개 항목`),
           );
           return {
-            spec: { strategy: "rss", feedUrl: feed.finalUrl },
-            rows,
-            strategy: "rss",
-            feedUrl: feed.finalUrl,
+            outcome: {
+              spec: { strategy: "rss", feedUrl: feed.finalUrl },
+              rows,
+              strategy: "rss",
+              feedUrl: feed.finalUrl,
+            },
+            hintMissed: Boolean(hint),
           };
         }
       }
@@ -169,10 +186,13 @@ async function detectExtraction(
       step("구조화 데이터(JSON-LD) 감지", "ok", `${jsonLd.length}개 항목`),
     );
     return {
-      spec: { strategy: "structured" },
-      rows: jsonLd,
-      strategy: "structured",
-      feedUrl: null,
+      outcome: {
+        spec: { strategy: "structured" },
+        rows: jsonLd,
+        strategy: "structured",
+        feedUrl: null,
+      },
+      hintMissed: Boolean(hint),
     };
   }
   steps.push(step("구조화 데이터(JSON-LD) 감지", "warn", "목록 없음"));
@@ -183,14 +203,17 @@ async function detectExtraction(
       step("HTML 목록 패턴 추출", "ok", `${generated.rows.length}개 항목`),
     );
     return {
-      spec: generated.spec,
-      rows: generated.rows,
-      strategy: "html",
-      feedUrl: null,
+      outcome: {
+        spec: generated.spec,
+        rows: generated.rows,
+        strategy: "html",
+        feedUrl: null,
+      },
+      hintMissed: Boolean(hint),
     };
   }
   steps.push(step("HTML 목록 패턴 추출", "fail", "반복 목록을 찾지 못함"));
-  return null;
+  return { outcome: null, hintMissed: Boolean(hint) };
 }
 
 // 상세 페이지로 판단되면 부모 목록 후보를 제시한다.
@@ -315,13 +338,48 @@ export async function analyzeUrl(
   const pageTitle = extractTitle(page.body) ?? new URL(page.finalUrl).hostname;
 
   // 5. 추출 전략 감지
-  const outcome = await detectExtraction(
+  const detection = await detectExtraction(
     page.body,
     page.contentType,
     page.finalUrl,
     steps,
     hint,
   );
+  let outcome = detection.outcome;
+
+  // 6. JS로 목록을 채우는 사이트: 일반 HTML에서 목록을 못 찾았거나
+  // 힌트 문자열이 없으면 헤드리스 브라우저로 렌더링해 한 번 더 시도한다.
+  if (!outcome || detection.hintMissed) {
+    try {
+      const rendered = await renderPage(page.finalUrl);
+      steps.push(
+        step("브라우저 렌더링", "ok", "렌더링된 DOM으로 다시 분석"),
+      );
+      const retried = await detectExtraction(
+        rendered.html,
+        "text/html",
+        rendered.finalUrl,
+        steps,
+        hint,
+      );
+      if (retried.outcome) {
+        // 렌더링이 필요했음을 스펙에 기록해 이후 수집도 브라우저로 한다.
+        // rss 전략은 피드 자체를 fetch하므로 렌더링 표시가 불필요하다.
+        if (retried.outcome.spec && retried.outcome.spec.strategy !== "rss") {
+          retried.outcome.spec.render = true;
+        }
+        outcome = retried.outcome;
+      }
+    } catch (err) {
+      steps.push(
+        step(
+          "브라우저 렌더링",
+          "warn",
+          err instanceof AppError ? err.message : "렌더링에 실패했습니다",
+        ),
+      );
+    }
+  }
 
   if (!outcome) {
     // 목록을 못 찾으면 상세 페이지로 보고 부모 후보 제시

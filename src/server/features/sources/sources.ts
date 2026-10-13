@@ -2,6 +2,7 @@ import type { SourceDetail, Subscription } from "@myportal/api-contracts";
 import { getDb } from "../../config/db";
 import { AppError, errorCodes } from "../../errors/error-codes";
 import { fetchPage } from "../crawl/fetcher";
+import { renderPage } from "../crawl/render";
 import { generateSpec, type CrawlSpec } from "../crawl/extract";
 import { mapItem, type ItemRow } from "../desk/desk";
 import { deskSql } from "../desk/desk.sql";
@@ -195,9 +196,17 @@ export async function rebuildSpec(
         : activeSpecRows[0].spec) as CrawlSpec
     : null;
   const storedHint = storedSpec?.hint;
+  const storedRender = storedSpec?.render === true;
 
-  const page = await fetchPage(String(source.url));
+  // JS 렌더링 소스는 브라우저로 렌더링한 DOM에서 스펙을 다시 만든다.
+  const page = storedRender
+    ? await renderPage(String(source.url)).then((r) => ({
+        body: r.html,
+        finalUrl: r.finalUrl,
+      }))
+    : await fetchPage(String(source.url));
   const generated = generateSpec(page.body, page.finalUrl, storedHint);
+  if (generated && storedRender) generated.spec.render = true;
   if (!generated) {
     throw new AppError(
       errorCodes.EXTRACTION_FAILED,

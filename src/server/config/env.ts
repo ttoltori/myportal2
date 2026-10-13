@@ -41,6 +41,9 @@ export const env = {
 
   internalApiSecret: process.env.INTERNAL_API_SECRET ?? "",
   crawlUserAgent,
+  // JS 렌더링이 필요한 소스 수집용 헤드리스 브라우저 경로.
+  // 비어 있으면 로컬은 시스템 Chrome, 운영(Vercel)은 @sparticuz/chromium을 쓴다.
+  chromiumPath: (process.env.CHROMIUM_PATH ?? "").trim(),
 
   llmApiBase: process.env.LLM_API_BASE ?? "",
   llmApiKey: process.env.LLM_API_KEY ?? "",

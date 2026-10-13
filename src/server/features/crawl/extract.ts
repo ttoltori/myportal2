@@ -16,6 +16,9 @@ export interface CrawlSpec {
   // 사용자가 지정한 '목록 항목 힌트' — 스펙과 함께 저장돼
   // 스펙 재생성/self-repair 시 같은 영역을 다시 찾는 데 사용한다.
   hint?: string;
+  // JS로 목록을 채우는 사이트: 일반 fetch가 아니라 헤드리스 브라우저로
+  // 렌더링한 DOM을 파싱한다.
+  render?: boolean;
 }
 
 export interface ExtractedRow {
@@ -201,23 +204,54 @@ interface Bucket {
   titleLen: number;
 }
 
-// 목록 패턴: 같은 부모 아래 같은 태그의 자식이 3개 이상 반복되고
-// 각 자식이 링크를 포함하면 목록으로 본다.
-// 아이템은 클래스가 아닌 태그명으로 묶는다 — li.top/li.bg처럼
-// 클래스 변형으로 같은 목록이 여러 버킷으로 쪼개지는 것을 방지하기 위함.
-// hint가 주어지면 그 문자열을 포함하는 버킷을 먼저 시도한다.
-export function generateSpec(
-  html: string,
-  pageUrl: string,
-  hint?: string,
-): { spec: CrawlSpec; rows: ExtractedRow[]; hintMatched: boolean } | null {
-  const { document } = parseHTML(html);
-  stripNoise(document);
+// 앵커 없이 JS 클릭으로 이동하는 목록 항목의 식별 신호.
+// 예: <tr class="contentitem" style="cursor:pointer" data-contest_pk="...">
+function isClickableItem(el: Element): boolean {
+  const style = el.getAttribute("style") ?? "";
+  if (/cursor\s*:\s*pointer/i.test(style)) return true;
+  if (el.hasAttribute("onclick")) return true;
+  const role = el.getAttribute("role") ?? "";
+  if (role === "button" || role === "link") return true;
+  if (el.hasAttribute("tabindex")) return true;
+  return ["data-href", "data-url", "data-link", "data-goto", "data-target"].some(
+    (a) => el.hasAttribute(a),
+  );
+}
 
+const TITLE_HINT_TOKENS = new Set([
+  "tit", "title", "subject", "name", "heading", "txt",
+]);
+
+// 앵커가 없는 항목에서 제목 후보 텍스트를 고른다.
+// class/id에 tit/title/subject 계열 토큰이 있는 요소를 우선하고,
+// 없으면 제목 태그(h1-h6, strong, b) 중 가장 긴 텍스트를 쓴다.
+function pickTitleText(el: Element): string {
+  let best = "";
+  for (const c of el.querySelectorAll("[class],[id]")) {
+    if (!hasToken(c, TITLE_HINT_TOKENS) || hasToken(c, BADGE_TOKENS)) continue;
+    const t = (c.textContent ?? "").replace(/\s+/g, " ").trim();
+    if (t.length > best.length) best = t;
+  }
+  if (best.length < 6) {
+    for (const c of el.querySelectorAll("h1,h2,h3,h4,h5,h6,strong,b")) {
+      const t = (c.textContent ?? "").replace(/\s+/g, " ").trim();
+      if (t.length > best.length) best = t;
+    }
+  }
+  return best.length >= 6 ? best.slice(0, 300) : "";
+}
+
+function buildBuckets(document: Document, anchorless: boolean): Map<string, Bucket> {
   const buckets = new Map<string, Bucket>();
   for (const el of document.querySelectorAll(ITEM_TAGS)) {
     const anchor = pickMainAnchor(el);
-    if (!anchor) continue;
+    let titleLen = 0;
+    if (anchor) {
+      titleLen = anchorTitle(anchor).length;
+    } else if (anchorless && isClickableItem(el)) {
+      titleLen = pickTitleText(el).length;
+    }
+    if (titleLen === 0) continue;
     const parent = el.parentElement;
     if (!parent) continue;
     const itemSelector = `${parentSelector(parent)} > ${el.tagName.toLowerCase()}`;
@@ -227,9 +261,18 @@ export function generateSpec(
       buckets.set(itemSelector, bucket);
     }
     bucket.elements.push(el);
-    bucket.titleLen += anchorTitle(anchor).length;
+    bucket.titleLen += titleLen;
   }
+  return buckets;
+}
 
+function evaluateBuckets(
+  document: Document,
+  buckets: Map<string, Bucket>,
+  pageUrl: string,
+  hint: string | undefined,
+  linkTemplates: Map<string, string>,
+): { spec: CrawlSpec; rows: ExtractedRow[]; hintMatched: boolean } | null {
   // 점수 = 항목 수 × 평균 제목 길이(상한 40).
   // 개수만 비교하면 사이드바 카테고리 메뉴처럼 "짧은 라벨이 많이 반복되는"
   // 네비게이션이 본문 목록보다 높게 평가되는 문제가 있다.
@@ -248,13 +291,48 @@ export function generateSpec(
       itemSelector: bucket.itemSelector,
       fields: {},
     };
-    const rows = applyDomSpec(document, spec, pageUrl);
+    const rows = applyDomSpec(document, spec, pageUrl, linkTemplates);
     if (rows.length >= 3) {
       if (hint) spec.hint = hint;
       return { spec, rows, hintMatched: bucket === hinted };
     }
   }
   return null;
+}
+
+// 목록 패턴: 같은 부모 아래 같은 태그의 자식이 3개 이상 반복되면 목록으로 본다.
+// 아이템은 클래스가 아닌 태그명으로 묶는다 — li.top/li.bg처럼
+// 클래스 변형으로 같은 목록이 여러 버킷으로 쪼개지는 것을 방지하기 위함.
+// hint가 주어지면 그 문자열을 포함하는 버킷을 먼저 시도한다.
+// 1차 패스는 링크를 가진 항목만 본다(기존 동작). 매칭이 없으면 2차 패스에서
+// cursor:pointer/onclick 같은 JS 클릭 목록(앵커 없는 항목)도 허용한다.
+export function generateSpec(
+  html: string,
+  pageUrl: string,
+  hint?: string,
+): { spec: CrawlSpec; rows: ExtractedRow[]; hintMatched: boolean } | null {
+  const { document } = parseHTML(html);
+  stripNoise(document);
+  const linkTemplates = collectLinkTemplates(html);
+
+  const strict = evaluateBuckets(
+    document,
+    buildBuckets(document, false),
+    pageUrl,
+    hint,
+    linkTemplates,
+  );
+  if (strict && (!hint || strict.hintMatched)) return strict;
+
+  const loose = evaluateBuckets(
+    document,
+    buildBuckets(document, true),
+    pageUrl,
+    hint,
+    linkTemplates,
+  );
+  if (loose && (!hint || loose.hintMatched)) return loose;
+  return strict ?? loose;
 }
 
 // 힌트 문자열을 포함하는 가장 안쪽 요소를 찾아,
@@ -393,6 +471,84 @@ function cssEscape(s: string): string {
 
 // ── 스펙 적용 ───────────────────────────────────────────
 
+// 페이지 안의 쿼리스트링 URL에서 "파라미터명 → URL 템플릿"을 모은다.
+// JS 클릭 목록은 항목 키를 data-* 속성에만 담고 있는 경우가 많은데
+// (예: data-contest_pk="111834"), 페이지 어딘가에 view.do?contest_pk=…
+// 형태의 URL이 있으면 그 템플릿에 키를 대입해 상세 링크를 복원할 수 있다.
+function collectLinkTemplates(html: string): Map<string, string> {
+  const map = new Map<string, string>();
+  const score = (u: string) =>
+    /view|read|detail|show|content|item|article|post|board|notice|story/i.test(u)
+      ? 2
+      : 1;
+  const scores = new Map<string, number>();
+  for (const m of html.matchAll(
+    /["']((?:https?:\/\/|\/)[^"'<>\s]+\?[^"'<>\s]+)["']/g,
+  )) {
+    const url = m[1];
+    const q = url.indexOf("?");
+    for (const kv of url.slice(q + 1).split("&")) {
+      const eq = kv.indexOf("=");
+      if (eq <= 0) continue;
+      const name = kv.slice(0, eq);
+      if (!name || name.length > 40) continue;
+      const s = score(url);
+      if ((scores.get(name) ?? 0) < s) {
+        scores.set(name, s);
+        map.set(name, url);
+      }
+    }
+  }
+  return map;
+}
+
+// 앵커가 없는 항목의 링크를 복원한다.
+// 우선순위: data-*/onclick에 든 URL → data-* 키의 URL 템플릿 대입.
+function deriveItemLink(
+  el: Element,
+  linkTemplates: Map<string, string>,
+  pageUrl: string,
+): string | null {
+  for (const name of el.getAttributeNames()) {
+    const v = (el.getAttribute(name) ?? "").trim();
+    if (/^https?:\/\//i.test(v) || v.startsWith("/")) {
+      const abs = absolutize(v, pageUrl);
+      if (abs) return abs;
+    }
+  }
+  const onclick = el.getAttribute("onclick") ?? "";
+  const om = onclick.match(
+    /(?:location\.href|location|window\.open)\s*[=(]\s*['"]([^'"]+)['"]/,
+  );
+  if (om) {
+    const abs = absolutize(om[1], pageUrl);
+    if (abs) return abs;
+  }
+  for (const name of el.getAttributeNames()) {
+    if (!name.startsWith("data-")) continue;
+    const tpl = linkTemplates.get(name.slice(5));
+    if (!tpl) continue;
+    const v = (el.getAttribute(name) ?? "").trim();
+    if (!v || v.length > 60) continue;
+    const q = tpl.indexOf("?");
+    const rebuilt =
+      tpl.slice(0, q + 1) +
+      tpl
+        .slice(q + 1)
+        .split("&")
+        .map((kv) => {
+          const eq = kv.indexOf("=");
+          return eq > 0 && kv.slice(0, eq) === name.slice(5)
+            ? `${kv.slice(0, eq)}=${encodeURIComponent(v)}`
+            : kv;
+        })
+        .join("&");
+    const abs = absolutize(rebuilt, pageUrl);
+    if (abs) return abs;
+  }
+  return null;
+}
+
 const DATE_RE =
   /(\d{4})[-./년](\d{1,2})[-./월](\d{1,2})|(\d{1,2})[-./](\d{1,2})[-./](\d{4})/;
 
@@ -427,6 +583,7 @@ function applyDomSpec(
   document: Document,
   spec: CrawlSpec,
   pageUrl: string,
+  linkTemplates: Map<string, string>,
 ): ExtractedRow[] {
   if (!spec.itemSelector) return [];
   let items: Element[];
@@ -438,9 +595,17 @@ function applyDomSpec(
   const rows: ExtractedRow[] = [];
   for (const el of items.slice(0, 100)) {
     const anchor = pickMainAnchor(el);
-    if (!anchor) continue;
-    const title = anchorTitle(anchor);
-    const link = absolutize(anchor.getAttribute("href") ?? "", pageUrl);
+    let title: string;
+    let link: string | null;
+    if (anchor) {
+      title = anchorTitle(anchor);
+      link = absolutize(anchor.getAttribute("href") ?? "", pageUrl);
+    } else {
+      // 앵커 없는 JS 클릭 목록 항목 — 제목 후보와 data-* 기반 링크 복원.
+      title = pickTitleText(el);
+      if (!title) continue;
+      link = deriveItemLink(el, linkTemplates, pageUrl);
+    }
     const timeEl = el.querySelector("time");
     const dateRaw =
       timeEl?.getAttribute("datetime") ??
@@ -471,5 +636,5 @@ export function applySpec(
 ): ExtractedRow[] {
   const { document } = parseHTML(html);
   stripNoise(document);
-  return applyDomSpec(document, spec, pageUrl);
+  return applyDomSpec(document, spec, pageUrl, collectLinkTemplates(html));
 }

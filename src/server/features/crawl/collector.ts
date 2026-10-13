@@ -2,6 +2,7 @@ import { getDb } from "../../config/db";
 import type { DatabaseClient } from "@ttoltori/database";
 import { AppError, errorCodes } from "../../errors/error-codes";
 import { fetchPage } from "./fetcher";
+import { renderPage } from "./render";
 import { robotsAllowed } from "./robots";
 import {
   applySpec,
@@ -86,10 +87,12 @@ async function repairSpec(
   sourceId: string,
   html: string,
   finalUrl: string,
-  hint?: string,
+  prevSpec?: CrawlSpec | null,
 ): Promise<{ spec: CrawlSpec; rows: ExtractedRow[] } | null> {
-  const regenerated = generateSpec(html, finalUrl, hint);
+  const regenerated = generateSpec(html, finalUrl, prevSpec?.hint);
   if (!regenerated || regenerated.rows.length === 0) return null;
+  // 렌더링이 필요한 소스는 새 스펙에도 그 사실을 유지한다.
+  if (prevSpec?.render) regenerated.spec.render = true;
 
   const db = getDb();
   const { rows: versions } = await db.query<{ v: string }>(
@@ -242,33 +245,50 @@ export async function collectSource(
   let lastModified: string | null = null;
 
   try {
-    const page = await fetchPage(source.url, {
-      etag: source.etag,
-      lastModified: source.last_modified,
-    });
-    etag = page.etag;
-    lastModified = page.lastModified;
+    const { rows: specRows } = await db.query<{
+      version: number;
+      spec: unknown;
+    }>(sourcesSql.latestActiveSpec, [sourceId]);
+    // pg는 jsonb를 이미 파싱된 객체로 반환하므로 문자열일 때만 JSON.parse한다.
+    const spec = specRows[0]
+      ? (typeof specRows[0].spec === "string"
+          ? JSON.parse(specRows[0].spec)
+          : specRows[0].spec) as CrawlSpec
+      : null;
 
-    if (page.status === 304) {
-      result = "unchanged";
+    // JS 렌더링 소스는 일반 fetch 대신 헤드리스 브라우저로 DOM을 가져온다.
+    // 렌더링된 DOM에는 ETag/304 조건부 요청을 적용할 수 없다.
+    let body = "";
+    let contentType = "";
+    let finalUrl = source.url;
+    if (spec?.render) {
+      const rendered = await renderPage(source.url);
+      body = rendered.html;
+      contentType = "text/html";
+      finalUrl = rendered.finalUrl;
     } else {
-      const { rows: specRows } = await db.query<{
-        version: number;
-        spec: unknown;
-      }>(sourcesSql.latestActiveSpec, [sourceId]);
-      // pg는 jsonb를 이미 파싱된 객체로 반환하므로 문자열일 때만 JSON.parse한다.
-      const spec = specRows[0]
-        ? (typeof specRows[0].spec === "string"
-            ? JSON.parse(specRows[0].spec)
-            : specRows[0].spec) as CrawlSpec
-        : null;
+      const page = await fetchPage(source.url, {
+        etag: source.etag,
+        lastModified: source.last_modified,
+      });
+      etag = page.etag;
+      lastModified = page.lastModified;
+      if (page.status === 304) {
+        result = "unchanged";
+      } else {
+        body = page.body;
+        contentType = page.contentType;
+        finalUrl = page.finalUrl;
+      }
+    }
 
+    if (result !== "unchanged") {
       let extracted = await extractRows(
         source,
         spec,
-        page.body,
-        page.contentType,
-        page.finalUrl,
+        body,
+        contentType,
+        finalUrl,
       );
 
       // self-repair: 반복된 0건 추출이면 스펙을 재생성해 본다.
@@ -279,9 +299,9 @@ export async function collectSource(
       ) {
         const repaired = await repairSpec(
           sourceId,
-          page.body,
-          page.finalUrl,
-          spec?.hint,
+          body,
+          finalUrl,
+          spec,
         );
         if (repaired) extracted = repaired.rows;
       }
@@ -500,7 +520,13 @@ async function runBaseline(
 
   if (rows.length === 0) {
     // 분석 시 미리보기가 없으면 라이브 수집으로 기준선을 만든다.
-    const page = await fetchPage(input.url);
+    const page = input.spec?.render
+      ? await renderPage(input.url).then((r) => ({
+          body: r.html,
+          finalUrl: r.finalUrl,
+          contentType: "text/html",
+        }))
+      : await fetchPage(input.url);
     if (input.fetchStrategy === "rss" || looksLikeFeed(page.contentType, page.body)) {
       rows = parseFeed(page.body, page.finalUrl);
     } else {
