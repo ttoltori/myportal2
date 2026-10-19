@@ -50,6 +50,7 @@ export default function SourcesPage() {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [bulkCategory, setBulkCategory] = useState("");
   const [bulkTag, setBulkTag] = useState("");
+  const [collecting, setCollecting] = useState(false);
 
   const load = useCallback(() => {
     Promise.all([api.subscriptions.list(), api.categories.list()])
@@ -121,6 +122,47 @@ export default function SourcesPage() {
       load();
     } catch (err) {
       showToast(err instanceof ApiError ? err.message : "일괄 작업 실패");
+    }
+  }
+
+  // 선택된 소스를 순회하며 수동 수집한다. 렌더링 소스는 1건에 수 초가 걸리므로
+  // 상대 서버 부담을 줄이기 위해 동시성을 2로 제한한다.
+  async function collectSelected() {
+    const targets = (subs ?? []).filter((s) => selected[s.id]);
+    if (!targets.length || collecting) return;
+    setCollecting(true);
+    let done = 0;
+    let failed = 0;
+    let newTotal = 0;
+    let firstError: string | null = null;
+    const CHUNK = 2;
+    try {
+      for (let i = 0; i < targets.length; i += CHUNK) {
+        const settled = await Promise.allSettled(
+          targets
+            .slice(i, i + CHUNK)
+            .map((s) => api.sources.collectNow(s.sourceId)),
+        );
+        for (const r of settled) {
+          if (r.status === "fulfilled") {
+            done += 1;
+            newTotal += r.value.newCount;
+          } else {
+            failed += 1;
+            firstError ??=
+              r.reason instanceof ApiError ? r.reason.message : "수집 실패";
+          }
+        }
+      }
+      showToast(
+        failed === 0
+          ? `${done}건 수집 완료 — 신규 ${newTotal}건`
+          : `${done}건 수집(신규 ${newTotal}건), ${failed}건 실패 — ${firstError ?? ""}`,
+      );
+      setSelected({});
+      load();
+    } finally {
+      setCollecting(false);
     }
   }
 
@@ -316,6 +358,19 @@ export default function SourcesPage() {
           }}
         >
           <span>{selectedIds.length}건 선택됨</span>
+          <button
+            onClick={() => void collectSelected()}
+            disabled={collecting}
+            style={{
+              border: "1px solid var(--paper)",
+              padding: "3px 10px",
+              background: collecting ? "var(--paper)" : "none",
+              color: collecting ? "var(--ink)" : "var(--paper)",
+              cursor: collecting ? "default" : "pointer",
+            }}
+          >
+            {collecting ? "수집 중…" : "수집"}
+          </button>
           <label className="flex items-center gap-1">
             카테고리 이동
             <select
