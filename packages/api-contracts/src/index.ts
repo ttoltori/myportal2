@@ -242,6 +242,9 @@ export const analyzeResultSchema = z.object({
     categoryPath: z.array(z.string()),
     tagNames: z.array(z.string()),
   }),
+  // 힌트 영역을 찾지 못했을 때 사용자가 직접 힌트 문자열을 고를 수 있도록
+  // 마지막으로 분석한 페이지의 텍스트 스냅샷(블록 단위 줄바꿈).
+  pageText: z.string().nullable(),
   errorCode: z.string().nullable(),
 });
 export type AnalyzeResult = z.infer<typeof analyzeResultSchema>;

@@ -30,6 +30,30 @@ function step(
   return { label, status, detail };
 }
 
+// 사용자가 힌트 문자열을 직접 고를 수 있도록 HTML에서
+// 블록 단위 텍스트만 추린다(태그·스크립트 제거, 빈 줄 정리).
+const PAGE_TEXT_LINES = 400;
+const PAGE_TEXT_LIMIT = 20_000;
+function toPageText(html: string): string {
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(
+      /<\/(p|div|li|tr|td|th|h[1-6]|section|article|ul|ol|dl|dd|dt|table|a|button|option)>/gi,
+      "\n",
+    )
+    .replace(/<[^>]+>/g, " ");
+  return decodeEntities(text)
+    .split("\n")
+    .map((l) => l.replace(/\s+/g, " ").trim())
+    .filter((l) => l.length > 1)
+    .slice(0, PAGE_TEXT_LINES)
+    .join("\n")
+    .slice(0, PAGE_TEXT_LIMIT);
+}
+
 // 추출 샘플에서 필드 목록을 만든다. title/link/published는 고정 역할이고
 // 나머지 키는 attrs에 들어간다.
 export function fieldsFromRows(rows: ExtractedRow[]): SourceField[] {
@@ -268,6 +292,7 @@ export async function analyzeUrl(
         existingSourceId: null,
         preview: null,
         suggested: { displayName: "", categoryPath: [], tagNames: [] },
+        pageText: null,
         errorCode: err.code,
       };
     }
@@ -290,6 +315,7 @@ export async function analyzeUrl(
       existingSourceId: existing[0].id,
       preview: null,
       suggested: { displayName: "", categoryPath: [], tagNames: [] },
+      pageText: null,
       errorCode: errorCodes.ALREADY_SUBSCRIBED,
     };
   }
@@ -307,6 +333,7 @@ export async function analyzeUrl(
       existingSourceId: null,
       preview: null,
       suggested: { displayName: "", categoryPath: [], tagNames: [] },
+      pageText: null,
       errorCode: errorCodes.ROBOTS_DISALLOWED,
     };
   }
@@ -329,6 +356,7 @@ export async function analyzeUrl(
         existingSourceId: null,
         preview: null,
         suggested: { displayName: "", categoryPath: [], tagNames: [] },
+        pageText: null,
         errorCode: err.code,
       };
     }
@@ -338,6 +366,9 @@ export async function analyzeUrl(
   const pageTitle = extractTitle(page.body) ?? new URL(page.finalUrl).hostname;
 
   // 5. 추출 전략 감지
+  // lastHtml은 마지막으로 분석을 시도한 DOM — 힌트 미스 시 사용자가
+  // 직접 힌트를 찾도록 페이지 텍스트로 응답에 포함한다.
+  let lastHtml = page.body;
   const detection = await detectExtraction(
     page.body,
     page.contentType,
@@ -346,12 +377,14 @@ export async function analyzeUrl(
     hint,
   );
   let outcome = detection.outcome;
+  let hintMissed = detection.hintMissed;
 
   // 6. JS로 목록을 채우는 사이트: 일반 HTML에서 목록을 못 찾았거나
   // 힌트 문자열이 없으면 헤드리스 브라우저로 렌더링해 한 번 더 시도한다.
   if (!outcome || detection.hintMissed) {
     try {
       const rendered = await renderPage(page.finalUrl);
+      lastHtml = rendered.html;
       steps.push(
         step("브라우저 렌더링", "ok", "렌더링된 DOM으로 다시 분석"),
       );
@@ -362,6 +395,7 @@ export async function analyzeUrl(
         steps,
         hint,
       );
+      hintMissed = retried.hintMissed;
       if (retried.outcome) {
         // 렌더링이 필요했음을 스펙에 기록해 이후 수집도 브라우저로 한다.
         // rss 전략은 피드 자체를 fetch하므로 렌더링 표시가 불필요하다.
@@ -396,6 +430,7 @@ export async function analyzeUrl(
       existingSourceId: null,
       preview: null,
       suggested: { displayName: pageTitle, categoryPath: [], tagNames: [] },
+      pageText: hintMissed ? toPageText(lastHtml) : null,
       errorCode: errorCodes.PAGE_TYPE_UNKNOWN,
     };
   }
@@ -422,6 +457,7 @@ export async function analyzeUrl(
       spec: outcome.spec,
     },
     suggested: { displayName: pageTitle, categoryPath: [], tagNames: [] },
+    pageText: hintMissed ? toPageText(lastHtml) : null,
     errorCode: null,
   };
 }

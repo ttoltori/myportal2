@@ -73,6 +73,7 @@ export default function AddSourcePage() {
   const [candidate, setCandidate] = useState<string>("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
+  const [pageTextFilter, setPageTextFilter] = useState("");
 
   useEffect(() => {
     api.categories
@@ -191,6 +192,18 @@ export default function AddSourcePage() {
   }
 
   const previewRows = result?.preview?.rows ?? [];
+
+  // 힌트를 입력했는데 마지막 '힌트 영역 선택' 단계가 실패(warn)로 끝났으면
+  // 수집된 페이지 텍스트를 우측에 보여 사용자가 직접 힌트를 고르게 한다.
+  const hintMissed =
+    (result?.steps ?? [])
+      .filter((s) => s.label === "힌트 영역 선택")
+      .at(-1)?.status === "warn";
+  const pageTextLines = (result?.pageText ?? "").split("\n").filter(Boolean);
+  const pq = pageTextFilter.trim().toLowerCase();
+  const filteredPageLines = pq
+    ? pageTextLines.filter((l) => l.toLowerCase().includes(pq))
+    : pageTextLines;
 
   return (
     <div>
@@ -407,6 +420,51 @@ export default function AddSourcePage() {
               </div>
             )}
           </div>
+
+          {/* 우측 열: 페이지 텍스트(힌트 미스 시) + 추출 미리보기 */}
+          <div>
+          {/* 우측: 페이지 텍스트 (힌트 미스 시 수동 힌트 선택용) */}
+          {hintMissed && result?.pageText && (
+            <div>
+              <div className="flex items-baseline justify-between">
+                <div style={{ fontSize: 15, fontWeight: 700 }}>
+                  수집된 페이지 텍스트
+                </div>
+                <div className="font-mono text-ink-2" style={{ fontSize: 11 }}>
+                  {pageTextLines.length}줄
+                </div>
+              </div>
+              <div
+                className="font-mono text-ink-2"
+                style={{ fontSize: 11, marginTop: 4 }}
+              >
+                힌트 영역을 찾지 못했습니다. 아래에서 실제 목록 항목의 텍스트를
+                복사해 ‘목록 항목 힌트’에 붙여넣고 다시 분석하세요.
+              </div>
+              <input
+                className="input-line mt-2"
+                style={{ fontSize: 12 }}
+                placeholder="텍스트 필터 — 입력한 문자열을 포함한 줄만 표시"
+                value={pageTextFilter}
+                onChange={(e) => setPageTextFilter(e.target.value)}
+              />
+              <pre
+                className="font-mono mt-2"
+                style={{
+                  background: "var(--paper-2)",
+                  border: "1px solid var(--rule)",
+                  height: 480,
+                  overflowY: "auto",
+                  padding: "10px 12px",
+                  fontSize: 11,
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-all",
+                }}
+              >
+                {filteredPageLines.join("\n")}
+              </pre>
+            </div>
+          )}
 
           {/* 우측: 추출 미리보기 */}
           {result?.outcome === "list" && result.preview && (
@@ -686,6 +744,7 @@ export default function AddSourcePage() {
               )}
             </div>
           )}
+          </div>
         </div>
       </div>
     </div>

@@ -266,6 +266,40 @@ describe("generateSpec", () => {
     expect(gen!.rows[0].link).toBe("https://x.kr/post/1");
   });
 
+  // 위스켓처럼 검색 폼이 목록 전체를 감싸는 구조:
+  // form/search 토큰 때문에 본문이 통째로 지워지면 안 된다.
+  const FORM_LIST_HTML = `<html><body class="project-search">
+    <form id="searchProjectListForm">
+      <div class="search-box">
+        <input type="text" placeholder="검색어">
+        <a href="/submit">조건 검색</a>
+      </div>
+      <div class="search-result">
+        ${[1, 2, 3, 4, 5]
+          .map(
+            (i) => `<div class="project-info-box"><div class="wrapper">
+              <a class="project-link" href="/project/${i}"><p>프로젝트 개발 업무 공고 제목 ${i}번</p></a>
+            </div></div>`,
+          )
+          .join("")}
+      </div>
+    </form>
+  </body></html>`;
+
+  it("form/search 노이즈 컨테이너 안의 본문 목록도 추출한다", () => {
+    const gen = generateSpec(FORM_LIST_HTML, "https://x.kr/project/");
+    expect(gen).not.toBeNull();
+    expect(gen!.rows).toHaveLength(5);
+    expect(gen!.rows[0].title).toContain("프로젝트 개발 업무 공고");
+    expect(gen!.rows[0].link).toBe("https://x.kr/project/1");
+  });
+
+  it("검색 입력 폼과 class='search'의 본문 보존은 구분한다", () => {
+    const gen = generateSpec(FORM_LIST_HTML, "https://x.kr/");
+    // search-box 안의 '조건 검색' 링크는 결과에 섞이면 안 된다
+    expect(gen!.rows.every((r) => r.link?.startsWith("https://x.kr/project/"))).toBe(true);
+  });
+
   it("힌트가 앵커리스 목록을 가리키면 해당 목록을 선택한다", () => {
     const html = `<html><body>
       <ul class="snb">

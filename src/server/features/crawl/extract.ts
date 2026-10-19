@@ -382,6 +382,25 @@ function bucketScore(b: Bucket): number {
   return b.elements.length * Math.min(b.titleLen / b.elements.length, 40);
 }
 
+// 노이즈로 보이는 컨테이너라도 긴 제목의 링크를 다수 품고 있으면
+// 검색 폼이 아니라 '결과 목록'일 가능성이 크다 — 보존한다.
+// 예: 위스켓은 form#searchProjectListForm > div.search-result 안에 목록이 있다.
+const CONTENT_ANCHOR_MIN = 5;
+const CONTENT_ANCHOR_TEXT_MIN = 15;
+function looksLikeContentContainer(el: Element): boolean {
+  const tag = el.tagName.toLowerCase();
+  // body/main을 지우면 문서 전체가 사라지므로 절대 제거하지 않는다.
+  if (tag === "body" || tag === "html" || tag === "main") return true;
+  let n = 0;
+  for (const a of el.querySelectorAll("a[href]")) {
+    const t = (a.textContent ?? "").replace(/\s+/g, " ").trim();
+    if (t.length >= CONTENT_ANCHOR_TEXT_MIN && ++n >= CONTENT_ANCHOR_MIN) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function stripNoise(document: Document): void {
   for (const sel of [
     "script",
@@ -393,7 +412,6 @@ function stripNoise(document: Document): void {
     "header",
     "footer",
     "aside",
-    "form",
     "[role='navigation']",
     "[role='banner']",
     "[role='contentinfo']",
@@ -402,9 +420,17 @@ function stripNoise(document: Document): void {
   ]) {
     for (const el of document.querySelectorAll(sel)) el.remove();
   }
-  // nav/menu/banner 계열 클래스나 id를 가진 컨테이너 제거
+  // 목록 본문이 폼 안에 들어가는 사이트가 있으므로
+  // form은 내용 검사 후에 제거한다.
+  for (const el of document.querySelectorAll("form")) {
+    if (!looksLikeContentContainer(el)) el.remove();
+  }
+  // nav/menu/banner 계열 클래스나 id를 가진 컨테이너 제거.
+  // search-result/project-search처럼 노이즈 토큰을 가진 본문 컨테이너는 보존한다.
   for (const el of [...document.querySelectorAll("[class],[id]")]) {
-    if (hasToken(el, NOISE_TOKENS)) el.remove();
+    if (hasToken(el, NOISE_TOKENS) && !looksLikeContentContainer(el)) {
+      el.remove();
+    }
   }
 }
 
