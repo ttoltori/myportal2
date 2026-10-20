@@ -6,12 +6,11 @@ import type {
   AnalyzeResult,
   Category,
   SourceField,
-  FieldType,
-  FieldRole,
 } from "@myportal/api-contracts";
 import { api, isAuthError, ApiError } from "@/lib/api";
 import { pad2, showToast } from "@/lib/shell";
 import { Masthead } from "@/components/masthead";
+import { FieldPreviewTable } from "@/components/field-preview-table";
 
 const EXAMPLES = [
   { url: "https://www.iitp.kr/kr/1/notice/list.it", name: "IITP 사업공고" },
@@ -20,26 +19,6 @@ const EXAMPLES = [
     url: "https://techcrunch.com/category/artificial-intelligence/",
     name: "TechCrunch AI",
   },
-];
-
-const ROLE_OPTIONS: { value: FieldRole; label: string }[] = [
-  { value: "none", label: "없음" },
-  { value: "title", label: "제목" },
-  { value: "link", label: "링크" },
-  { value: "published", label: "게시일" },
-  { value: "deadline", label: "마감일" },
-  { value: "summary", label: "요약" },
-];
-
-const TYPE_OPTIONS: { value: FieldType; label: string }[] = [
-  { value: "text", label: "텍스트" },
-  { value: "url", label: "URL" },
-  { value: "date", label: "날짜" },
-  { value: "datetime", label: "일시" },
-  { value: "date_range", label: "기간" },
-  { value: "number", label: "숫자" },
-  { value: "image", label: "이미지" },
-  { value: "tag_list", label: "태그 목록" },
 ];
 
 interface LogLine {
@@ -138,13 +117,6 @@ export default function AddSourcePage() {
     } finally {
       setAnalyzing(false);
     }
-  }
-
-  function fieldRowValue(row: Record<string, unknown>, key: string): string {
-    const v = row[key];
-    if (v === undefined || v === null) return "";
-    if (typeof v === "object") return JSON.stringify(v);
-    return String(v);
   }
 
   async function save(linkOnly = false) {
@@ -479,136 +451,11 @@ export default function AddSourcePage() {
                   {result.fieldSource === "llm" && " · AI 추론"}
                 </div>
               </div>
-              <div className="mt-2" style={{ overflowX: "auto" }}>
-                <table style={{ borderCollapse: "collapse", width: "100%" }}>
-                  <thead>
-                    <tr>
-                      {fields.map((f, idx) => (
-                        <th
-                          key={f.key}
-                          style={{
-                            border: "1px solid var(--rule)",
-                            padding: "6px 8px",
-                            verticalAlign: "top",
-                            minWidth: 150,
-                            opacity: f.visible ? 1 : 0.4,
-                            textAlign: "left",
-                          }}
-                        >
-                          <input
-                            className="input-line"
-                            style={{ fontSize: 11 }}
-                            value={f.label}
-                            onChange={(e) =>
-                              setFields((fs) =>
-                                fs.map((x, i) =>
-                                  i === idx
-                                    ? { ...x, label: e.target.value }
-                                    : x,
-                                ),
-                              )
-                            }
-                          />
-                          <select
-                            className="input-line mt-1"
-                            style={{ fontSize: 11 }}
-                            value={f.type}
-                            onChange={(e) =>
-                              setFields((fs) =>
-                                fs.map((x, i) =>
-                                  i === idx
-                                    ? {
-                                        ...x,
-                                        type: e.target.value as FieldType,
-                                      }
-                                    : x,
-                                ),
-                              )
-                            }
-                          >
-                            {TYPE_OPTIONS.map((t) => (
-                              <option key={t.value} value={t.value}>
-                                {t.label}
-                              </option>
-                            ))}
-                          </select>
-                          <select
-                            className="input-line mt-1"
-                            style={{ fontSize: 11 }}
-                            value={f.role}
-                            onChange={(e) =>
-                              setFields((fs) =>
-                                fs.map((x, i) =>
-                                  i === idx
-                                    ? {
-                                        ...x,
-                                        role: e.target.value as FieldRole,
-                                      }
-                                    : x,
-                                ),
-                              )
-                            }
-                          >
-                            {ROLE_OPTIONS.map((r) => (
-                              <option key={r.value} value={r.value}>
-                                {r.label}
-                              </option>
-                            ))}
-                          </select>
-                          <label
-                            className="font-mono text-ink-2 flex items-center gap-1 mt-1"
-                            style={{ fontSize: 11 }}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={!f.visible}
-                              onChange={(e) =>
-                                setFields((fs) =>
-                                  fs.map((x, i) =>
-                                    i === idx
-                                      ? { ...x, visible: !e.target.checked }
-                                      : x,
-                                  ),
-                                )
-                              }
-                            />
-                            숨김
-                          </label>
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {previewRows.map((row, ri) => (
-                      <tr key={ri}>
-                        {fields.map((f) => {
-                          const mono =
-                            f.type === "date" ||
-                            f.type === "datetime" ||
-                            f.type === "date_range" ||
-                            f.type === "number" ||
-                            f.type === "url";
-                          return (
-                            <td
-                              key={f.key}
-                              className={mono ? "font-mono" : ""}
-                              style={{
-                                border: "1px solid var(--rule)",
-                                padding: "5px 8px",
-                                fontSize: mono ? 11 : 12,
-                                verticalAlign: "top",
-                                opacity: f.visible ? 1 : 0.4,
-                              }}
-                            >
-                              {fieldRowValue(row, f.key)}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <FieldPreviewTable
+                fields={fields}
+                rows={previewRows}
+                onFieldsChange={setFields}
+              />
 
               <div
                 className="mt-5 grid gap-5"
