@@ -5,6 +5,8 @@ import {
 import type {
   AnalyzeRequest,
   AnalyzeResult,
+  ApplySpecRequest,
+  ApplySpecResponse,
   BulkSubscription,
   Category,
   CreateSourceRequest,
@@ -16,6 +18,8 @@ import type {
   Item,
   KeywordRule,
   Me,
+  ReanalyzeRequest,
+  ReanalyzeResult,
   RequestMagicLink,
   RuleScopeType,
   SourceDetail,
@@ -155,11 +159,19 @@ export function createMyportalClient(config: ApiClientConfig) {
           "POST",
           `/v1/sources/${id}/collect`,
         ),
-      rebuildSpec: (id: string) =>
-        httpRequest<{ version: number }>(
+      reanalyze: (id: string, body?: ReanalyzeRequest) =>
+        httpRequest<ReanalyzeResult>(
           config,
           "POST",
-          `/v1/sources/${id}/rebuild-spec`,
+          `/v1/sources/${id}/reanalyze`,
+          { body: body ?? {} },
+        ),
+      applySpec: (id: string, body: ApplySpecRequest) =>
+        httpRequest<ApplySpecResponse>(
+          config,
+          "POST",
+          `/v1/sources/${id}/apply-spec`,
+          { body },
         ),
     },
 

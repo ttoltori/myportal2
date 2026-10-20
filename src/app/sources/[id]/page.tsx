@@ -123,24 +123,6 @@ export default function SourceDetailPage() {
     }
   }
 
-  async function rebuildSpec() {
-    if (busy) return;
-    setBusy(true);
-    log("명세 재생성 시도 … 진행 중");
-    try {
-      const res = await api.sources.rebuildSpec(sourceId);
-      log(`명세 재생성 완료 (v${res.version} 적용)`);
-      showToast(`새 명세 v${res.version}(으)로 교체했습니다`);
-      load();
-    } catch (err) {
-      const msg = err instanceof ApiError ? err.message : "재생성 실패";
-      log(`명세 재생성 실패 — ${msg}`);
-      showToast(msg);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   if (notFound) {
     return (
       <div>
@@ -203,13 +185,6 @@ export default function SourceDetailPage() {
               onClick={() => void collectNow()}
             >
               지금 수집
-            </button>
-            <button
-              className="btn"
-              disabled={busy || sub.fetchStrategy === "link"}
-              onClick={() => void rebuildSpec()}
-            >
-              명세 다시 만들기
             </button>
           </div>
         </div>

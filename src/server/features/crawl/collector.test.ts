@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb } from "../../config/db";
 import { AppError, errorCodes } from "../../errors/error-codes";
 import { sourcesSql } from "../sources/sources.sql";
-import { rebuildSpec } from "../sources/sources";
 import { repairSpec } from "./collector";
 import { enrichWithLlm, type EnrichResult } from "./llm/enrich";
 import { fetchPage } from "./fetcher";
@@ -197,79 +196,5 @@ describe("repairSpec", () => {
 
     expect(out).toBeNull();
     expect(db.inserted()).toBeNull();
-  });
-});
-
-describe("rebuildSpec", () => {
-  it("userId와 purpose rebuild로 enrich를 호출한다", async () => {
-    fakeDb(null);
-    vi.mocked(enrichWithLlm).mockImplementation(async (args) => llmResult(args.base!.spec));
-
-    await rebuildSpec("user-1", "src-1");
-
-    const args = vi.mocked(enrichWithLlm).mock.calls[0][0];
-    expect(args.userId).toBe("user-1");
-    expect(args.purpose).toBe("rebuild");
-    expect(args.sourceId).toBe("src-1");
-  });
-
-  it("LLM 보강 스펙(fieldSource 포함)을 manual 버전으로 저장한다", async () => {
-    const db = fakeDb(null);
-    vi.mocked(enrichWithLlm).mockImplementation(async (args) =>
-      llmResult({
-        ...(args.base!.spec),
-        fields: { org: { selector: ".org", type: "text", label: "기관" } },
-        fieldSource: "llm",
-      }),
-    );
-
-    const out = await rebuildSpec("user-1", "src-1");
-
-    expect(out.version).toBe(2);
-    const saved = db.inserted();
-    expect(saved?.method).toBe("manual");
-    expect(saved?.json).toContain('"fieldSource":"llm"');
-  });
-
-  it("휴리스틱과 LLM 구제 모두 실패하면 EXTRACTION_FAILED를 던진다", async () => {
-    fakeDb(null);
-    vi.mocked(fetchPage).mockResolvedValue({ body: EMPTY_HTML, finalUrl: PAGE_URL } as never);
-    vi.mocked(enrichWithLlm).mockResolvedValue(null);
-
-    const err = await rebuildSpec("user-1", "src-1").catch((e: unknown) => e);
-
-    expect(vi.mocked(enrichWithLlm).mock.calls[0][0].base).toBeNull();
-    expect(err).toBeInstanceOf(AppError);
-    expect((err as AppError).code).toBe(errorCodes.EXTRACTION_FAILED);
-  });
-
-  it("render가 필요한 소스는 보강 스펙에도 render true가 유지된다", async () => {
-    const db = fakeDb({ strategy: "html", itemSelector: "li", render: true });
-    vi.mocked(enrichWithLlm).mockImplementation(async (args) => llmResult(args.base!.spec));
-
-    await rebuildSpec("user-1", "src-1");
-
-    expect(vi.mocked(renderPage)).toHaveBeenCalled();
-    expect(db.inserted()?.json).toContain('"render":true');
-  });
-
-  it("구제 모드로 복구된 스펙에도 기존 render=true와 hint가 유지된다", async () => {
-    const db = fakeDb({ strategy: "html", itemSelector: "li", render: true, hint: "공지" });
-    vi.mocked(renderPage).mockResolvedValue({ html: EMPTY_HTML, finalUrl: PAGE_URL } as never);
-    vi.mocked(enrichWithLlm).mockResolvedValue(
-      llmResult({
-        strategy: "html",
-        itemSelector: "li.row",
-        fields: { org: { selector: ".org", type: "text", label: "기관" } },
-        fieldSource: "llm",
-      }),
-    );
-
-    await rebuildSpec("user-1", "src-1");
-
-    expect(vi.mocked(enrichWithLlm).mock.calls[0][0].base).toBeNull();
-    const saved = db.inserted();
-    expect(saved?.spec.render).toBe(true);
-    expect(saved?.spec.hint).toBe("공지");
   });
 });

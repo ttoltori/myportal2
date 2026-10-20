@@ -1,13 +1,9 @@
 import type { SourceDetail, Subscription } from "@myportal/api-contracts";
 import { getDb } from "../../config/db";
 import { AppError, errorCodes } from "../../errors/error-codes";
-import { fetchPage } from "../crawl/fetcher";
-import { renderPage } from "../crawl/render";
-import { generateSpec, type CrawlSpec } from "../crawl/extract";
 import { mapItem, type ItemRow } from "../desk/desk";
 import { deskSql } from "../desk/desk.sql";
 import { collectSource } from "../crawl/collector";
-import { enrichWithLlm } from "../crawl/llm/enrich";
 import { sourcesSql } from "./sources.sql";
 
 interface SubRow {
@@ -178,75 +174,4 @@ export async function collectNow(
   await findSubscribedSource(userId, sourceId);
   const res = await collectSource(sourceId, { manual: true, userId });
   return { newCount: res.newCount, runId: res.runId };
-}
-
-// 수동 스펙 재생성: 현재 페이지를 다시 받아 DOM 휴리스틱으로 새 버전을 만든다.
-// 기존 스펙에 저장된 힌트(hint)가 있으면 같은 영역을 다시 찾도록 재사용한다.
-export async function rebuildSpec(
-  userId: string,
-  sourceId: string,
-): Promise<{ version: number }> {
-  const { source } = await findSubscribedSource(userId, sourceId);
-  const db = getDb();
-
-  const { rows: activeSpecRows } = await db.query<{ spec: unknown }>(
-    sourcesSql.latestActiveSpec,
-    [sourceId],
-  );
-  // pg는 jsonb를 이미 파싱된 객체로 반환하므로 문자열일 때만 JSON.parse한다.
-  const storedSpec = activeSpecRows[0]
-    ? (typeof activeSpecRows[0].spec === "string"
-        ? JSON.parse(activeSpecRows[0].spec)
-        : activeSpecRows[0].spec) as CrawlSpec
-    : null;
-  const storedHint = storedSpec?.hint;
-  const storedRender = storedSpec?.render === true;
-
-  // JS 렌더링 소스는 브라우저로 렌더링한 DOM에서 스펙을 다시 만든다.
-  const page = storedRender
-    ? await renderPage(String(source.url)).then((r) => ({
-        body: r.html,
-        finalUrl: r.finalUrl,
-      }))
-    : await fetchPage(String(source.url));
-  const heuristic = generateSpec(page.body, page.finalUrl, storedHint);
-  // 휴리스틱이 실패해도 LLM 구제를 시도하고, 둘 다 실패할 때만 오류로 처리한다.
-  const generated = await enrichWithLlm({
-    purpose: "rebuild",
-    userId,
-    sourceId,
-    html: page.body,
-    pageUrl: page.finalUrl,
-    base: heuristic ? { spec: heuristic.spec, rows: heuristic.rows } : null,
-  });
-  if (!generated) {
-    throw new AppError(
-      errorCodes.EXTRACTION_FAILED,
-      "페이지에서 목록 패턴을 추출할 수 없습니다.",
-      422,
-    );
-  }
-  // 구제 모드 스펙에는 render/hint가 없으므로 기존 스펙 값을 다시 입힌다.
-  if (storedRender) generated.spec.render = true;
-  if (storedHint && !generated.spec.hint) generated.spec.hint = storedHint;
-
-  const { rows: v } = await db.query<{ v: number }>(
-    `select coalesce(max(version), 0) as v from myportal.crawl_specs where source_id = $1`,
-    [sourceId],
-  );
-  const next = Number(v[0]?.v ?? 0) + 1;
-  await db.transaction(async (tx) => {
-    await tx.query(sourcesSql.deactivateSpecs, [sourceId]);
-    await tx.query(sourcesSql.insertSpec, [
-      sourceId,
-      next,
-      JSON.stringify(generated.spec),
-      "manual",
-    ]);
-    await tx.query(
-      `update myportal.sources set fetch_strategy = 'html', status = 'ok' where id = $1`,
-      [sourceId],
-    );
-  });
-  return { version: next };
 }

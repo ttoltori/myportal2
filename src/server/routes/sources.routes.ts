@@ -1,14 +1,17 @@
 import { Hono } from "hono";
 import {
   analyzeRequestSchema,
+  applySpecRequestSchema,
   createSourceRequestSchema,
+  reanalyzeRequestSchema,
 } from "@myportal/api-contracts";
 import { success } from "../utils/response";
 import { validationError } from "../errors/error-codes";
 import { getUserId } from "../features/auth/auth";
 import { analyzeUrl } from "../features/crawl/analyze";
 import { createSourceWithBaseline } from "../features/crawl/collector";
-import { collectNow, getSourceDetail, rebuildSpec } from "../features/sources/sources";
+import { collectNow, getSourceDetail } from "../features/sources/sources";
+import { applySpecForSource, reanalyzeSource } from "../features/sources/reanalyze";
 import type { CrawlSpec, ExtractedRow } from "../features/crawl/extract";
 
 // 분석 미리보기 행({title, link, published, ...attrs})을 ExtractedRow 형태로 변환한다.
@@ -54,6 +57,13 @@ export const sourcesRoutes = new Hono()
   .post("/sources/:id/collect", async (c) => {
     return success(c, await collectNow(getUserId(c), c.req.param("id")));
   })
-  .post("/sources/:id/rebuild-spec", async (c) => {
-    return success(c, await rebuildSpec(getUserId(c), c.req.param("id")));
+  .post("/sources/:id/reanalyze", async (c) => {
+    const body = reanalyzeRequestSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!body.success) throw validationError("유효하지 않은 요청입니다.", body.error.issues);
+    return success(c, await reanalyzeSource(getUserId(c), c.req.param("id"), body.data.hint));
+  })
+  .post("/sources/:id/apply-spec", async (c) => {
+    const body = applySpecRequestSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!body.success) throw validationError("유효하지 않은 요청입니다.", body.error.issues);
+    return success(c, await applySpecForSource(getUserId(c), c.req.param("id"), body.data));
   });
