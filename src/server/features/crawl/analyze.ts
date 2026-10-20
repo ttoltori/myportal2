@@ -7,6 +7,7 @@ import type {
 import { getDb } from "../../config/db";
 import { AppError, errorCodes } from "../../errors/error-codes";
 import { fetchPage } from "./fetcher";
+import { enrichWithLlm, type EnrichResult } from "./llm/enrich";
 import { renderPage } from "./render";
 import { robotsAllowed } from "./robots";
 import {
@@ -274,6 +275,7 @@ function parentCandidates(html: string, pageUrl: string): ParentCandidate[] {
 }
 
 export async function analyzeUrl(
+  userId: string,
   rawUrl: string,
   hint?: string,
 ): Promise<AnalyzeResult> {
@@ -300,6 +302,7 @@ export async function analyzeUrl(
         suggested: { displayName: "", categoryPath: [], tagNames: [] },
         pageText: null,
         errorCode: err.code,
+        fieldSource: null,
       };
     }
     throw err;
@@ -323,6 +326,7 @@ export async function analyzeUrl(
       suggested: { displayName: "", categoryPath: [], tagNames: [] },
       pageText: null,
       errorCode: errorCodes.ALREADY_SUBSCRIBED,
+      fieldSource: null,
     };
   }
   steps.push(step("기존 소스 확인", "ok", "신규 소스"));
@@ -341,6 +345,7 @@ export async function analyzeUrl(
       suggested: { displayName: "", categoryPath: [], tagNames: [] },
       pageText: null,
       errorCode: errorCodes.ROBOTS_DISALLOWED,
+      fieldSource: null,
     };
   }
   steps.push(step("robots.txt 확인", "ok"));
@@ -364,6 +369,7 @@ export async function analyzeUrl(
         suggested: { displayName: "", categoryPath: [], tagNames: [] },
         pageText: null,
         errorCode: err.code,
+        fieldSource: null,
       };
     }
     throw err;
@@ -375,6 +381,9 @@ export async function analyzeUrl(
   // lastHtml은 마지막으로 분석을 시도한 DOM — 힌트 미스 시 사용자가
   // 직접 힌트를 찾도록 페이지 텍스트로 응답에 포함한다.
   let lastHtml = page.body;
+  // outcome이 어떤 DOM에서 나왔는지 — LLM 보강은 이 DOM으로 셀렉터를 검증해야 하고,
+  // 렌더링 DOM이었다면 스펙에 render를 남겨야 이후 수집이 같은 DOM을 본다.
+  let analyzed = { html: page.body, url: page.finalUrl, rendered: false };
   const detection = await detectExtraction(
     page.body,
     page.contentType,
@@ -402,6 +411,15 @@ export async function analyzeUrl(
         hint,
       );
       hintMissed = retried.hintMissed;
+      // outcome이 없으면 LLM 구제가 이 렌더링 DOM을 쓴다. 정적 outcome이 이미
+      // 있으면(힌트 미스) 그 outcome의 DOM을 유지한다.
+      if (retried.outcome || !outcome) {
+        analyzed = {
+          html: rendered.html,
+          url: rendered.finalUrl,
+          rendered: true,
+        };
+      }
       if (retried.outcome) {
         // 렌더링이 필요했음을 스펙에 기록해 이후 수집도 브라우저로 한다.
         // rss 전략은 피드 자체를 fetch하므로 렌더링 표시가 불필요하다.
@@ -418,6 +436,32 @@ export async function analyzeUrl(
           err instanceof AppError ? err.message : "렌더링에 실패했습니다",
         ),
       );
+    }
+  }
+
+  // 7. LLM 필드 보강(목록 있음) 또는 구제(목록 없음). 실패해도 예외 없이
+  // 휴리스틱 결과가 유지되고, 구제 실패는 null로 돌아와 아래 detail 경로를 탄다.
+  let fieldSource: AnalyzeResult["fieldSource"] = null;
+  const base = outcome?.spec ? { spec: outcome.spec, rows: outcome.rows } : null;
+  if (!outcome || base) {
+    const enriched = await enrichWithLlm({
+      html: analyzed.html,
+      pageUrl: analyzed.url,
+      base,
+      userId,
+      sourceId: null,
+      purpose: base ? "analyze-fields" : "analyze-rescue",
+    });
+    if (enriched) {
+      steps.push(enriched.step);
+      fieldSource = enriched.fieldSource;
+      // 보강 모드의 rss/structured는 enrich가 건너뛰고 base를 그대로 돌려준다.
+      outcome = {
+        strategy: outcome?.strategy ?? "html",
+        feedUrl: outcome?.feedUrl ?? null,
+        spec: carryOverSpecFlags(enriched, analyzed.rendered, hint),
+        rows: enriched.rows,
+      };
     }
   }
 
@@ -438,10 +482,11 @@ export async function analyzeUrl(
       suggested: { displayName: pageTitle, categoryPath: [], tagNames: [] },
       pageText: hintMissed ? toPageText(lastHtml) : null,
       errorCode: errorCodes.PAGE_TYPE_UNKNOWN,
+      fieldSource: null,
     };
   }
 
-  const fields = fieldsFromRows(outcome.rows);
+  const fields = fieldsFromRows(outcome.rows, outcome.spec);
   steps.push(step("페이지 유형 판정", "ok", "목록 페이지"));
 
   return {
@@ -465,7 +510,26 @@ export async function analyzeUrl(
     suggested: { displayName: pageTitle, categoryPath: [], tagNames: [] },
     pageText: hintMissed ? toPageText(lastHtml) : null,
     errorCode: null,
+    fieldSource,
   };
+}
+
+// enrichWithLlm이 돌려주는 스펙은 구제 모드에서 { strategy, itemSelector, fields }뿐이라
+// render·hint가 없다. render가 빠지면 이후 정기 수집이 정적 HTML로 0건을 받아
+// 소스가 조용히 죽으므로, 분석 DOM이 렌더링 결과였다면 반드시 되살린다.
+function carryOverSpecFlags(
+  enriched: EnrichResult,
+  rendered: boolean,
+  hint: string | undefined,
+): CrawlSpec {
+  const spec = enriched.spec;
+  if (spec.strategy === "rss") return spec;
+  if (rendered) spec.render = true;
+  // generateSpec과 같은 규칙: 힌트가 있으면 rebuild·self-repair가 재사용하도록 남긴다.
+  if (hint && spec.strategy === "html" && spec.hint === undefined) {
+    spec.hint = hint;
+  }
+  return spec;
 }
 
 function extractTitle(html: string): string | null {

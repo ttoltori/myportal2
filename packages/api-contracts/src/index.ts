@@ -246,6 +246,9 @@ export const analyzeResultSchema = z.object({
   // 마지막으로 분석한 페이지의 텍스트 스냅샷(블록 단위 줄바꿈).
   pageText: z.string().nullable(),
   errorCode: z.string().nullable(),
+  // 미리보기 필드 메타의 출처. "llm"이면 등록 화면에 'AI 추론' 배지를 표시한다.
+  // 목록 분석에 성공하지 못한 응답은 null.
+  fieldSource: z.enum(["llm", "heuristic"]).nullable(),
 });
 export type AnalyzeResult = z.infer<typeof analyzeResultSchema>;
 

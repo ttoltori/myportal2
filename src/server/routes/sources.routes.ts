@@ -26,7 +26,7 @@ export const sourcesRoutes = new Hono()
   .post("/sources/analyze", async (c) => {
     const body = analyzeRequestSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!body.success) throw validationError("유효한 URL을 입력해주세요.", body.error.issues);
-    return success(c, await analyzeUrl(body.data.url, body.data.hint));
+    return success(c, await analyzeUrl(getUserId(c), body.data.url, body.data.hint));
   })
   .post("/sources", async (c) => {
     const parsed = createSourceRequestSchema.safeParse(await c.req.json().catch(() => ({})));
