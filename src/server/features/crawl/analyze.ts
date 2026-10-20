@@ -5,9 +5,10 @@ import type {
   SourceField,
 } from "@myportal/api-contracts";
 import { getDb } from "../../config/db";
-import { AppError, errorCodes } from "../../errors/error-codes";
+import { AppError, errorCodes, type ErrorCode } from "../../errors/error-codes";
 import { fetchPage } from "./fetcher";
 import { enrichWithLlm, type EnrichResult } from "./llm/enrich";
+import type { LlmPurpose } from "./llm/usage";
 import { renderPage } from "./render";
 import { robotsAllowed } from "./robots";
 import {
@@ -118,7 +119,7 @@ function guessFieldType(v: unknown): SourceField["type"] {
   return "text";
 }
 
-interface AnalyzeOutcome {
+export interface AnalyzeOutcome {
   spec: CrawlSpec | null;
   rows: ExtractedRow[];
   strategy: "rss" | "structured" | "html";
@@ -274,103 +275,57 @@ function parentCandidates(html: string, pageUrl: string): ParentCandidate[] {
   return candidates.slice(0, 5);
 }
 
-export async function analyzeUrl(
-  userId: string,
-  rawUrl: string,
-  hint?: string,
-): Promise<AnalyzeResult> {
+export interface ListingAnalysis {
+  steps: AnalyzeStep[];
+  pageTitle: string | null;
+  outcome: AnalyzeOutcome | null; // null = 목록 패턴 없음
+  fieldSource: "llm" | "heuristic" | null;
+  pageText: string | null; // 힌트 미스 시 텍스트 스냅샷
+  staticHtml: string; // parentCandidates용 정적 HTML
+  finalUrl: string;
+  // robots 금지·fetch 실패. 던지지 않고 돌려줘 호출처가 각자의 응답 형태로 조립한다.
+  blocked: { code: ErrorCode; detail: string } | null;
+}
+
+// robots → 페이지 가져오기 → 추출 전략 감지 → 렌더링 재시도 → LLM 보강.
+// 신규 등록(analyzeUrl)과 재분석이 같은 분석을 쓰도록, 중복 확인 앞뒤를 떼어낸 코어다.
+export async function analyzeListing(args: {
+  userId: string;
+  url: string; // 정규화된 URL
+  hint?: string;
+  sourceId: string | null; // llm_calls 기록용
+  purpose: LlmPurpose;
+}): Promise<ListingAnalysis> {
+  const { userId, url, hint, sourceId, purpose } = args;
   const steps: AnalyzeStep[] = [];
-  const db = getDb();
-
-  // 1. URL 검증·정규화
-  let normalized: string;
-  try {
-    normalized = normalizeUrl(rawUrl);
-    assertPublicUrl(normalized);
-    steps.push(step("URL 검증", "ok"));
-  } catch (err) {
-    if (err instanceof AppError) {
-      steps.push(step("URL 검증", "fail", err.message));
-      return {
-        steps,
-        outcome: "error",
-        normalizedUrl: null,
-        pageTitle: null,
-        candidates: [],
-        existingSourceId: null,
-        preview: null,
-        suggested: { displayName: "", categoryPath: [], tagNames: [] },
-        pageText: null,
-        errorCode: err.code,
-        fieldSource: null,
-      };
-    }
-    throw err;
-  }
-
-  // 2. 기존 소스 중복 확인
-  const { rows: existing } = await db.query<{ id: string }>(
-    `select id from myportal.sources where normalized_url = $1`,
-    [normalized],
-  );
-  if (existing[0]) {
-    steps.push(step("기존 소스 확인", "ok", "이미 등록된 소스"));
-    return {
-      steps,
-      outcome: "exists",
-      normalizedUrl: normalized,
-      pageTitle: null,
-      candidates: [],
-      existingSourceId: existing[0].id,
-      preview: null,
-      suggested: { displayName: "", categoryPath: [], tagNames: [] },
-      pageText: null,
-      errorCode: errorCodes.ALREADY_SUBSCRIBED,
-      fieldSource: null,
-    };
-  }
-  steps.push(step("기존 소스 확인", "ok", "신규 소스"));
+  const blockedResult = (code: ErrorCode, detail: string): ListingAnalysis => ({
+    steps,
+    pageTitle: null,
+    outcome: null,
+    fieldSource: null,
+    pageText: null,
+    staticHtml: "",
+    finalUrl: url,
+    blocked: { code, detail },
+  });
 
   // 3. robots.txt
-  if (!(await robotsAllowed(normalized))) {
-    steps.push(step("robots.txt 확인", "fail", "수집이 금지된 경로"));
-    return {
-      steps,
-      outcome: "link-only",
-      normalizedUrl: normalized,
-      pageTitle: null,
-      candidates: [],
-      existingSourceId: null,
-      preview: null,
-      suggested: { displayName: "", categoryPath: [], tagNames: [] },
-      pageText: null,
-      errorCode: errorCodes.ROBOTS_DISALLOWED,
-      fieldSource: null,
-    };
+  if (!(await robotsAllowed(url))) {
+    const detail = "수집이 금지된 경로";
+    steps.push(step("robots.txt 확인", "fail", detail));
+    return blockedResult(errorCodes.ROBOTS_DISALLOWED, detail);
   }
   steps.push(step("robots.txt 확인", "ok"));
 
   // 4. 페이지 가져오기
   let page;
   try {
-    page = await fetchPage(normalized);
+    page = await fetchPage(url);
     steps.push(step("페이지 접근", "ok", `HTTP ${page.status}`));
   } catch (err) {
     if (err instanceof AppError) {
       steps.push(step("페이지 접근", "fail", err.message));
-      return {
-        steps,
-        outcome: "error",
-        normalizedUrl: normalized,
-        pageTitle: null,
-        candidates: [],
-        existingSourceId: null,
-        preview: null,
-        suggested: { displayName: "", categoryPath: [], tagNames: [] },
-        pageText: null,
-        errorCode: err.code,
-        fieldSource: null,
-      };
+      return blockedResult(err.code, err.message);
     }
     throw err;
   }
@@ -440,7 +395,7 @@ export async function analyzeUrl(
   }
 
   // 7. LLM 필드 보강(목록 있음) 또는 구제(목록 없음). 실패해도 예외 없이
-  // 휴리스틱 결과가 유지되고, 구제 실패는 null로 돌아와 아래 detail 경로를 탄다.
+  // 휴리스틱 결과가 유지되고, 구제 실패는 null로 돌아와 호출처가 detail 경로를 탄다.
   let fieldSource: AnalyzeResult["fieldSource"] = null;
   const base = outcome?.spec ? { spec: outcome.spec, rows: outcome.rows } : null;
   if (!outcome || base) {
@@ -449,8 +404,10 @@ export async function analyzeUrl(
       pageUrl: analyzed.url,
       base,
       userId,
-      sourceId: null,
-      purpose: base ? "analyze-fields" : "analyze-rescue",
+      sourceId,
+      // 보강/구제 구분은 목록을 찾았는지에 달려 있어 호출 전에는 알 수 없다.
+      // 호출처는 analyze-fields만 넘기고, 목록이 없으면 여기서 구제로 바꾼다.
+      purpose: !base && purpose === "analyze-fields" ? "analyze-rescue" : purpose,
     });
     if (enriched) {
       steps.push(enriched.step);
@@ -465,9 +422,108 @@ export async function analyzeUrl(
     }
   }
 
+  return {
+    steps,
+    pageTitle,
+    outcome,
+    fieldSource,
+    pageText: hintMissed ? toPageText(lastHtml) : null,
+    staticHtml: page.body,
+    finalUrl: page.finalUrl,
+    blocked: null,
+  };
+}
+
+export async function analyzeUrl(
+  userId: string,
+  rawUrl: string,
+  hint?: string,
+): Promise<AnalyzeResult> {
+  const steps: AnalyzeStep[] = [];
+  const db = getDb();
+
+  // 1. URL 검증·정규화
+  let normalized: string;
+  try {
+    normalized = normalizeUrl(rawUrl);
+    assertPublicUrl(normalized);
+    steps.push(step("URL 검증", "ok"));
+  } catch (err) {
+    if (err instanceof AppError) {
+      steps.push(step("URL 검증", "fail", err.message));
+      return {
+        steps,
+        outcome: "error",
+        normalizedUrl: null,
+        pageTitle: null,
+        candidates: [],
+        existingSourceId: null,
+        preview: null,
+        suggested: { displayName: "", categoryPath: [], tagNames: [] },
+        pageText: null,
+        errorCode: err.code,
+        fieldSource: null,
+      };
+    }
+    throw err;
+  }
+
+  // 2. 기존 소스 중복 확인
+  const { rows: existing } = await db.query<{ id: string }>(
+    `select id from myportal.sources where normalized_url = $1`,
+    [normalized],
+  );
+  if (existing[0]) {
+    steps.push(step("기존 소스 확인", "ok", "이미 등록된 소스"));
+    return {
+      steps,
+      outcome: "exists",
+      normalizedUrl: normalized,
+      pageTitle: null,
+      candidates: [],
+      existingSourceId: existing[0].id,
+      preview: null,
+      suggested: { displayName: "", categoryPath: [], tagNames: [] },
+      pageText: null,
+      errorCode: errorCodes.ALREADY_SUBSCRIBED,
+      fieldSource: null,
+    };
+  }
+  steps.push(step("기존 소스 확인", "ok", "신규 소스"));
+
+  // 3~7. robots → 가져오기 → 추출 → 렌더링 재시도 → LLM 보강
+  const listing = await analyzeListing({
+    userId,
+    url: normalized,
+    hint,
+    sourceId: null,
+    purpose: "analyze-fields",
+  });
+  steps.push(...listing.steps);
+
+  if (listing.blocked) {
+    return {
+      steps,
+      outcome:
+        listing.blocked.code === errorCodes.ROBOTS_DISALLOWED
+          ? "link-only"
+          : "error",
+      normalizedUrl: normalized,
+      pageTitle: null,
+      candidates: [],
+      existingSourceId: null,
+      preview: null,
+      suggested: { displayName: "", categoryPath: [], tagNames: [] },
+      pageText: null,
+      errorCode: listing.blocked.code,
+      fieldSource: null,
+    };
+  }
+
+  const { outcome, pageTitle } = listing;
   if (!outcome) {
     // 목록을 못 찾으면 상세 페이지로 보고 부모 후보 제시
-    const candidates = parentCandidates(page.body, page.finalUrl);
+    const candidates = parentCandidates(listing.staticHtml, listing.finalUrl);
     steps.push(
       step("페이지 유형 판정", "warn", "목록 패턴 없음 — 상세 페이지로 추정"),
     );
@@ -479,8 +535,8 @@ export async function analyzeUrl(
       candidates,
       existingSourceId: null,
       preview: null,
-      suggested: { displayName: pageTitle, categoryPath: [], tagNames: [] },
-      pageText: hintMissed ? toPageText(lastHtml) : null,
+      suggested: { displayName: pageTitle ?? "", categoryPath: [], tagNames: [] },
+      pageText: listing.pageText,
       errorCode: errorCodes.PAGE_TYPE_UNKNOWN,
       fieldSource: null,
     };
@@ -507,10 +563,10 @@ export async function analyzeUrl(
       fetchStrategy: outcome.strategy,
       spec: outcome.spec,
     },
-    suggested: { displayName: pageTitle, categoryPath: [], tagNames: [] },
-    pageText: hintMissed ? toPageText(lastHtml) : null,
+    suggested: { displayName: pageTitle ?? "", categoryPath: [], tagNames: [] },
+    pageText: listing.pageText,
     errorCode: null,
-    fieldSource,
+    fieldSource: listing.fieldSource,
   };
 }
 

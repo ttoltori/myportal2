@@ -1,7 +1,7 @@
 import { analyzeResultSchema } from "@myportal/api-contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppError, errorCodes } from "../../errors/error-codes";
-import { analyzeUrl } from "./analyze";
+import { analyzeListing, analyzeUrl } from "./analyze";
 import type { CrawlSpec, ExtractedRow } from "./extract";
 import { enrichWithLlm, type EnrichResult } from "./llm/enrich";
 import { fetchPage } from "./fetcher";
@@ -260,5 +260,31 @@ describe("analyzeUrl", () => {
     const r = await analyzeUrl("u1", URL_IN);
     expect(r.outcome).toBe("detail");
     expect(enrichWithLlm).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("analyzeListing", () => {
+  const args = {
+    userId: "u1",
+    url: URL_IN,
+    sourceId: null,
+    purpose: "analyze-fields" as const,
+  };
+
+  it("robots 금지면 blocked에 ROBOTS_DISALLOWED를 담고 예외를 던지지 않는다", async () => {
+    vi.mocked(robotsAllowed).mockResolvedValue(false);
+    const r = await analyzeListing(args);
+    expect(r.blocked?.code).toBe(errorCodes.ROBOTS_DISALLOWED);
+    expect(r.outcome).toBeNull();
+    expect(fetchPage).not.toHaveBeenCalled();
+  });
+
+  it("fetch 실패면 blocked에 그 오류 코드를 담는다", async () => {
+    vi.mocked(fetchPage).mockRejectedValue(
+      new AppError(errorCodes.URL_UNREACHABLE, "접근 불가", 502),
+    );
+    const r = await analyzeListing(args);
+    expect(r.blocked?.code).toBe(errorCodes.URL_UNREACHABLE);
+    expect(r.outcome).toBeNull();
   });
 });
