@@ -476,6 +476,7 @@ export default function AddSourcePage() {
                 <div className="font-mono text-ink-2" style={{ fontSize: 11 }}>
                   최근 {previewRows.length}건 · 필드 {fields.length}개 ·{" "}
                   {result.preview.fetchStrategy}
+                  {result.fieldSource === "llm" && " · AI 추론"}
                 </div>
               </div>
               <div className="mt-2" style={{ overflowX: "auto" }}>

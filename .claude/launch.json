@@ -4,8 +4,22 @@
     {
       "name": "prototype-static",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "4173", "--directory", "prototype"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "4173",
+        "--directory",
+        "prototype"
+      ],
       "port": 4173
+    },
+    {
+      "name": "myportal-dev",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "dev"
+      ],
+      "port": 3001
     }
   ]
 }
