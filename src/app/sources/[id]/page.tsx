@@ -3,10 +3,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import type { Category, SourceDetail } from "@myportal/api-contracts";
+import type {
+  Category,
+  ReanalyzeResult,
+  SourceDetail,
+  SourceField,
+} from "@myportal/api-contracts";
 import { api, isAuthError, ApiError } from "@/lib/api";
 import { formatTimeHM, pad2, showToast } from "@/lib/shell";
 import { Masthead } from "@/components/masthead";
+import { FieldPreviewTable } from "@/components/field-preview-table";
 
 const STATUS_LABELS: Record<string, string> = {
   ok: "정상",
@@ -21,6 +27,13 @@ const STATUS_STAMP: Record<string, string> = {
   fail: "stamp stamp-fail",
   pause: "stamp stamp-pause",
   link: "stamp stamp-link",
+};
+const STEP_STAMP: Record<string, string> = {
+  ok: "stamp stamp-ok",
+  warn: "stamp stamp-warn",
+  fail: "stamp stamp-fail",
+  pause: "stamp stamp-pause",
+  running: "stamp stamp-pause",
 };
 const STRATEGY_LABELS: Record<string, string> = {
   rss: "RSS",
@@ -70,6 +83,10 @@ export default function SourceDetailPage() {
   const [selVersion, setSelVersion] = useState<number | null>(null);
   const [actionLog, setActionLog] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [reanalysis, setReanalysis] = useState<ReanalyzeResult | null>(null);
+  const [panelFields, setPanelFields] = useState<SourceField[]>([]);
+  const [panelHint, setPanelHint] = useState("");
+  const [pageTextFilter, setPageTextFilter] = useState("");
 
   const log = useCallback((text: string) => {
     setActionLog((l) => [...l, `${formatTimeHM(new Date())} ${text}`]);
@@ -123,6 +140,56 @@ export default function SourceDetailPage() {
     }
   }
 
+  async function reanalyze() {
+    if (busy) return;
+    setBusy(true);
+    log("다시 분석 요청 … 진행 중");
+    try {
+      const res = await api.sources.reanalyze(
+        sourceId,
+        panelHint.trim() ? { hint: panelHint.trim() } : undefined,
+      );
+      setReanalysis(res);
+      setPanelFields(res.preview?.fields ?? []);
+      log(`다시 분석 완료 (${res.outcome})`);
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : "다시 분석 실패";
+      log(`다시 분석 실패 — ${msg}`);
+      showToast(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyReanalysis() {
+    // 목록 패턴이 없으면 보낼 명세가 없다. 서버가 거부하긴 하지만 버튼도 눌리지 않게 막는다.
+    if (busy || reanalysis?.outcome !== "list" || !reanalysis.preview) return;
+    const { preview } = reanalysis;
+    setBusy(true);
+    log("분석 결과 적용 … 진행 중");
+    try {
+      const res = await api.sources.applySpec(sourceId, {
+        spec: preview.spec,
+        fields: panelFields,
+        fetchStrategy: preview.fetchStrategy,
+        hint: panelHint.trim() || undefined,
+      });
+      log(
+        `버전 ${res.version} 적용 · 백필 ${res.backfilled}건 · 신규 ${res.inserted}건` +
+          (res.backfillFailed ? " · 백필 실패(다음 수집에서 반영)" : ""),
+      );
+      showToast(`버전 ${res.version}을 적용했습니다`);
+      setReanalysis(null);
+      load();
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : "적용 실패";
+      log(`적용 실패 — ${msg}`);
+      showToast(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (notFound) {
     return (
       <div>
@@ -149,6 +216,20 @@ export default function SourceDetailPage() {
 
   const sub = detail.subscription;
   const selectedVersion = detail.versions.find((v) => v.version === selVersion);
+
+  const previewFieldKeys = new Set(
+    (reanalysis?.preview?.fields ?? []).map((f) => f.key),
+  );
+  const keptFieldCount = (reanalysis?.currentFields ?? []).filter(
+    (f) => !previewFieldKeys.has(f.key),
+  ).length;
+  const canApply =
+    !busy && reanalysis?.outcome === "list" && !!reanalysis.preview;
+  const pageTextLines = (reanalysis?.pageText ?? "").split("\n").filter(Boolean);
+  const pq = pageTextFilter.trim().toLowerCase();
+  const filteredPageLines = pq
+    ? pageTextLines.filter((l) => l.toLowerCase().includes(pq))
+    : pageTextLines;
 
   return (
     <div>
@@ -186,6 +267,13 @@ export default function SourceDetailPage() {
             >
               지금 수집
             </button>
+            <button
+              className="btn"
+              disabled={busy || sub.fetchStrategy === "link"}
+              onClick={() => void reanalyze()}
+            >
+              다시 분석
+            </button>
           </div>
         </div>
 
@@ -200,6 +288,160 @@ export default function SourceDetailPage() {
                 {l}
               </div>
             ))}
+          </div>
+        )}
+
+        {reanalysis && (
+          <div
+            className="mt-4"
+            style={{ border: "1px solid var(--rule)", padding: "14px 16px" }}
+          >
+            <div className="flex items-baseline justify-between">
+              <div style={{ fontSize: 15, fontWeight: 700 }}>재분석</div>
+              {reanalysis.preview && (
+                <div className="font-mono text-ink-2" style={{ fontSize: 11 }}>
+                  최근 {reanalysis.preview.rows.length}건 · 필드{" "}
+                  {panelFields.length}개 · {reanalysis.preview.fetchStrategy}
+                  {reanalysis.fieldSource === "llm" && " · AI 추론"}
+                </div>
+              )}
+            </div>
+
+            <div
+              className="font-mono mt-2"
+              style={{
+                background: "var(--paper-2)",
+                border: "1px solid var(--rule)",
+                maxHeight: 200,
+                overflowY: "auto",
+                padding: "10px 12px",
+                fontSize: 12,
+              }}
+            >
+              {reanalysis.steps.map((s, i) => (
+                <div
+                  key={i}
+                  className="flex items-baseline justify-between"
+                  style={{
+                    gap: 10,
+                    padding: "2px 0",
+                    borderBottom:
+                      i < reanalysis.steps.length - 1
+                        ? "1px dotted var(--rule)"
+                        : undefined,
+                  }}
+                >
+                  <span>
+                    {s.label}
+                    {s.detail ? ` — ${s.detail}` : ""}
+                  </span>
+                  <span className={STEP_STAMP[s.status] ?? "stamp"}>
+                    {s.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <label
+              className="font-mono text-ink-2"
+              style={{ display: "block", marginTop: 14, marginBottom: 2, fontSize: 11 }}
+            >
+              목록 항목 힌트 (선택)
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                className="input-line"
+                style={{ fontSize: 13 }}
+                placeholder="비워 두면 저장된 힌트를 사용합니다 — 목록 항목 텍스트 일부"
+                value={panelHint}
+                onChange={(e) => setPanelHint(e.target.value)}
+              />
+              <button
+                className="btn shrink-0"
+                disabled={busy || sub.fetchStrategy === "link"}
+                onClick={() => void reanalyze()}
+              >
+                {busy ? "분석 중…" : "다시 분석"}
+              </button>
+            </div>
+
+            {reanalysis.pageText && (
+              <div className="mt-4">
+                <div className="flex items-baseline justify-between">
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>
+                    수집된 페이지 텍스트
+                  </div>
+                  <div className="font-mono text-ink-2" style={{ fontSize: 11 }}>
+                    {pageTextLines.length}줄
+                  </div>
+                </div>
+                <div
+                  className="font-mono text-ink-2"
+                  style={{ fontSize: 11, marginTop: 4 }}
+                >
+                  실제 목록 항목의 텍스트를 복사해 ‘목록 항목 힌트’에 붙여넣고
+                  다시 분석하세요.
+                </div>
+                <input
+                  className="input-line mt-2"
+                  style={{ fontSize: 12 }}
+                  placeholder="텍스트 필터 — 입력한 문자열을 포함한 줄만 표시"
+                  value={pageTextFilter}
+                  onChange={(e) => setPageTextFilter(e.target.value)}
+                />
+                <pre
+                  className="font-mono mt-2"
+                  style={{
+                    background: "var(--paper-2)",
+                    border: "1px solid var(--rule)",
+                    height: 240,
+                    overflowY: "auto",
+                    padding: "10px 12px",
+                    fontSize: 11,
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-all",
+                  }}
+                >
+                  {filteredPageLines.join("\n")}
+                </pre>
+              </div>
+            )}
+
+            {reanalysis.outcome === "list" && reanalysis.preview && (
+              <div className="mt-4">
+                <FieldPreviewTable
+                  fields={panelFields}
+                  rows={reanalysis.preview.rows}
+                  onFieldsChange={setPanelFields}
+                />
+                {keptFieldCount > 0 && (
+                  <div
+                    className="font-mono text-ink-2"
+                    style={{ fontSize: 11, marginTop: 6 }}
+                  >
+                    이번 분석에서 발견되지 않은 기존 필드 {keptFieldCount}개는
+                    유지됩니다
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="mt-4 flex items-center gap-2">
+              <button
+                className="btn btn-primary"
+                disabled={!canApply}
+                onClick={() => void applyReanalysis()}
+              >
+                적용
+              </button>
+              <button
+                className="btn"
+                disabled={busy}
+                onClick={() => setReanalysis(null)}
+              >
+                취소
+              </button>
+            </div>
           </div>
         )}
 
