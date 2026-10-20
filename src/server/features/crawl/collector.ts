@@ -49,7 +49,7 @@ function nextCrawlAt(intervalMin: number): string {
 
 // ── extraction by strategy ─────────────────────────────
 
-async function extractRows(
+export async function extractRows(
   source: { url: string; fetch_strategy: string; feed_url: string | null },
   spec: CrawlSpec | null,
   html: string,

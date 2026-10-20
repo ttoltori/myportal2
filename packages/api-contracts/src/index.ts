@@ -275,6 +275,58 @@ export const createSourceResponseSchema = z.object({
 });
 export type CreateSourceResponse = z.infer<typeof createSourceResponseSchema>;
 
+// ── 소스 재분석/적용 ────────────────────────────────────
+// 등록된 소스를 다시 분석(reanalyze)해 미리보기를 확인한 뒤 적용(apply-spec)하는 2단계 흐름.
+
+export const reanalyzeRequestSchema = z.object({
+  // 저장된 spec.hint가 기본값으로 쓰이고, 값을 주면 그것으로 덮는다.
+  hint: z.string().trim().min(2).max(500).optional(),
+});
+export type ReanalyzeRequest = z.infer<typeof reanalyzeRequestSchema>;
+
+// reanalyze는 아무것도 저장하지 않는다(LLM 호출 이력 제외).
+// 미리보기 단계에서 사용자가 이탈해도 되돌릴 것이 없다.
+export const reanalyzeResultSchema = z.object({
+  steps: z.array(analyzeStepSchema),
+  // "exists"가 없다 — 이미 등록된 소스를 다시 보는 것이 전제다.
+  outcome: z.enum(["list", "detail", "link-only", "error"]),
+  pageTitle: z.string().nullable(),
+  preview: z
+    .object({
+      fields: z.array(sourceFieldSchema),
+      rows: z.array(z.record(z.unknown())),
+      fetchStrategy: fetchStrategySchema,
+      spec: z.unknown().nullable(),
+    })
+    .nullable(),
+  // 지금 저장된 필드. 패널이 '무엇이 바뀌는지'를 보여주고,
+  // 이번 분석에서 발견되지 않은 기존 필드 수를 세는 데 쓴다.
+  currentFields: z.array(sourceFieldSchema),
+  pageText: z.string().nullable(),
+  fieldSource: z.enum(["llm", "heuristic"]).nullable(),
+  errorCode: z.string().nullable(),
+});
+export type ReanalyzeResult = z.infer<typeof reanalyzeResultSchema>;
+
+// 서버는 spec을 신뢰하지 않고 추출을 재실행해 검증한다. 그래서 형태를 느슨하게(unknown) 받는다.
+export const applySpecRequestSchema = z.object({
+  spec: z.unknown(),
+  fields: z.array(sourceFieldSchema).max(30),
+  fetchStrategy: fetchStrategySchema,
+  hint: z.string().trim().min(2).max(500).optional(),
+});
+export type ApplySpecRequest = z.infer<typeof applySpecRequestSchema>;
+
+export const applySpecResponseSchema = z.object({
+  version: z.number(), // 새 스펙 버전
+  fieldsSaved: z.number(),
+  backfilled: z.number(), // attrs가 갱신된 기존 항목 수
+  inserted: z.number(), // 새로 삽입된 항목 수
+  // 페이지 조회 실패로 백필만 건너뜀(스펙·필드는 저장됨)
+  backfillFailed: z.boolean(),
+});
+export type ApplySpecResponse = z.infer<typeof applySpecResponseSchema>;
+
 // ── 구독/소스 관리 ──────────────────────────────────────
 
 export const updateSubscriptionSchema = z.object({
