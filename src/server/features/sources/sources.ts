@@ -25,7 +25,10 @@ interface SubRow {
 
 // 소스 상세는 '구독' 단위가 아니라 '소스' 단위로 조회한다.
 // 이 사용자가 해당 소스를 구독 중인지는 subscriptionForSource로 확인한다.
-async function findSubscribedSource(
+// 소스 단위 조작(상세·수집·재분석·적용)의 공통 권한 판정.
+// 소스가 없으면 404, 있지만 구독하지 않았으면 403 — 다섯 곳이 같은 규칙을
+// 쓰므로 한 곳에 둔다(CLAUDE.md §21).
+export async function findSubscribedSource(
   userId: string,
   sourceId: string,
 ): Promise<{ sub: { id: string; display_name: string; category_id: string | null; paused: boolean }; source: Record<string, unknown> }> {
