@@ -33,3 +33,50 @@ describe("env 기본값 처리", () => {
     );
   });
 });
+
+describe("LLM 환경변수", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("빈 LLM_API_BASE는 OpenAI 기본 엔드포인트로 대체된다", async () => {
+    vi.stubEnv("LLM_API_BASE", "");
+    const { env } = await import("./env");
+    expect(env.llmApiBase).toBe("https://api.openai.com/v1");
+  });
+
+  it("빈 LLM_MODEL은 gpt-4o-mini로 대체된다", async () => {
+    vi.stubEnv("LLM_MODEL", "");
+    const { env } = await import("./env");
+    expect(env.llmModel).toBe("gpt-4o-mini");
+  });
+
+  it("LLM_DAILY_LIMIT 기본값은 50, 시스템 기본값은 200이다", async () => {
+    vi.stubEnv("LLM_DAILY_LIMIT", "");
+    vi.stubEnv("LLM_DAILY_LIMIT_SYSTEM", "");
+    const { env } = await import("./env");
+    expect(env.llmDailyLimit).toBe(50);
+    expect(env.llmDailyLimitSystem).toBe(200);
+  });
+
+  it("hasLlm은 API 키 유무로만 판정한다", async () => {
+    vi.stubEnv("LLM_API_KEY", "");
+    const a = await import("./env");
+    expect(a.hasLlm()).toBe(false);
+    vi.resetModules();
+    vi.stubEnv("LLM_API_KEY", "sk-test");
+    const b = await import("./env");
+    expect(b.hasLlm()).toBe(true);
+  });
+
+  it("LLM 미설정이 validateEnv를 실패시키지 않는다", async () => {
+    vi.stubEnv("DATABASE_URL", "postgres://localhost/test");
+    vi.stubEnv("LLM_API_KEY", "");
+    const { validateEnv } = await import("./env");
+    expect(() => validateEnv()).not.toThrow();
+  });
+});

@@ -45,9 +45,14 @@ export const env = {
   // 비어 있으면 로컬은 시스템 Chrome, 운영(Vercel)은 @sparticuz/chromium을 쓴다.
   chromiumPath: (process.env.CHROMIUM_PATH ?? "").trim(),
 
-  llmApiBase: process.env.LLM_API_BASE ?? "",
-  llmApiKey: process.env.LLM_API_KEY ?? "",
-  llmModel: process.env.LLM_MODEL ?? "",
+  // LLM 기반 추출 필드 추론. 키가 비어 있으면 DOM 휴리스틱만 사용한다.
+  llmApiBase:
+    (process.env.LLM_API_BASE ?? "").trim() || "https://api.openai.com/v1",
+  llmApiKey: (process.env.LLM_API_KEY ?? "").trim(),
+  llmModel: (process.env.LLM_MODEL ?? "").trim() || "gpt-4o-mini",
+  // 비용 폭주 방지용 일별 호출 상한 (사용자별 / 시스템 경로)
+  llmDailyLimit: int(process.env.LLM_DAILY_LIMIT, 50),
+  llmDailyLimitSystem: int(process.env.LLM_DAILY_LIMIT_SYSTEM, 200),
 
   smtpUrl: process.env.SMTP_URL ?? "",
   mailFrom:
@@ -65,4 +70,8 @@ export function validateEnv(): void {
 
 export function hasSupabaseAuth(): boolean {
   return Boolean(env.supabaseUrl && env.supabaseServiceRoleKey);
+}
+
+export function hasLlm(): boolean {
+  return Boolean(env.llmApiKey);
 }
