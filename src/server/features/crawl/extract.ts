@@ -1,3 +1,4 @@
+import type { FieldRole, FieldType } from "@myportal/api-contracts";
 import { DOMParser, parseHTML } from "linkedom";
 import { absolutize } from "./url";
 
@@ -6,6 +7,10 @@ import { absolutize } from "./url";
 export interface FieldSelector {
   selector: string;
   attr?: string;
+  // LLM이 추론한 표시 메타. 없으면 fieldsFromRows가 기존 추정으로 폴백한다.
+  label?: string;
+  type?: FieldType;
+  role?: FieldRole;
 }
 
 export interface CrawlSpec {
@@ -19,6 +24,8 @@ export interface CrawlSpec {
   // JS로 목록을 채우는 사이트: 일반 fetch가 아니라 헤드리스 브라우저로
   // 렌더링한 DOM을 파싱한다.
   render?: boolean;
+  // fields 맵의 출처. UI 배지와 운영 추적용.
+  fieldSource?: "llm" | "heuristic";
 }
 
 export interface ExtractedRow {
@@ -647,7 +654,15 @@ function applyDomSpec(
       const v = fs.attr
         ? target?.getAttribute(fs.attr)
         : target?.textContent?.trim();
-      if (v) attrs[key] = v;
+      if (!v) continue;
+      if (fs.type === "url") {
+        // 상대 경로는 데스크에서 열리지 않으므로 절대 URL로 바꾼다.
+        // 절대화할 수 없는 값(javascript: 등)은 필드를 비운다.
+        const abs = absolutize(v, pageUrl);
+        if (abs) attrs[key] = abs;
+        continue;
+      }
+      attrs[key] = v;
     }
     rows.push({ title, link, publishedAt, attrs });
   }

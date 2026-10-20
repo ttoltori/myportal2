@@ -56,7 +56,12 @@ function toPageText(html: string): string {
 
 // 추출 샘플에서 필드 목록을 만든다. title/link/published는 고정 역할이고
 // 나머지 키는 attrs에 들어간다.
-export function fieldsFromRows(rows: ExtractedRow[]): SourceField[] {
+// spec.fields에 표시 메타(label/type/role)가 있으면 그것을 우선하고,
+// 없으면 샘플 값 기반 추정으로 폴백한다.
+export function fieldsFromRows(
+  rows: ExtractedRow[],
+  spec?: CrawlSpec | null,
+): SourceField[] {
   const fields: SourceField[] = [
     {
       key: "title",
@@ -90,11 +95,12 @@ export function fieldsFromRows(rows: ExtractedRow[]): SourceField[] {
   let order = 3;
   for (const key of extraKeys) {
     const sample = rows.find((r) => r.attrs[key] !== undefined)?.attrs[key];
+    const meta = spec?.fields?.[key];
     fields.push({
       key,
-      label: key,
-      type: guessFieldType(sample),
-      role: key === "deadline" ? "deadline" : "none",
+      label: meta?.label ?? key,
+      type: meta?.type ?? guessFieldType(sample),
+      role: meta?.role ?? (key === "deadline" ? "deadline" : "none"),
       visible: true,
       sortOrder: order++,
     });

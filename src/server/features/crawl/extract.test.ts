@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { fieldsFromRows } from "./analyze";
 import {
   applySpec,
   discoverFeedUrl,
@@ -7,6 +8,8 @@ import {
   parseDate,
   parseFeed,
   parseJsonLdList,
+  type CrawlSpec,
+  type ExtractedRow,
 } from "./extract";
 
 const RSS = `<?xml version="1.0"?>
@@ -320,5 +323,120 @@ describe("generateSpec", () => {
     expect(gen).not.toBeNull();
     expect(gen!.hintMatched).toBe(true);
     expect(gen!.spec.itemSelector).toBe("#dataList > tr");
+  });
+});
+
+describe("fields 메타가 있는 스펙", () => {
+  const pageUrl = "https://x.kr/list";
+  const itemHtml = (extra: string) => `<html><body><ul>
+    <li class="row"><a href="/v/1">공모전 제목 하나입니다</a>${extra}</li>
+  </ul></body></html>`;
+
+  it("applySpec이 추가 필드를 attrs로 추출한다", () => {
+    const html = itemHtml(
+      '<span class="org">서울시</span><span class="due">2026-11-30</span>',
+    );
+    const spec: CrawlSpec = {
+      strategy: "html",
+      itemSelector: "li.row",
+      fields: { org: { selector: ".org" }, deadline: { selector: ".due" } },
+    };
+    const rows = applySpec(html, spec, pageUrl);
+    expect(rows[0].attrs.org).toBe("서울시");
+    expect(rows[0].attrs.deadline).toBe("2026-11-30");
+  });
+
+  it("type이 url인 필드의 상대 경로를 절대 URL로 바꾼다", () => {
+    const html = itemHtml('<a class="file" href="/down/3">첨부</a>');
+    const spec: CrawlSpec = {
+      strategy: "html",
+      itemSelector: "li.row",
+      fields: { file: { selector: ".file", attr: "href", type: "url" } },
+    };
+    expect(applySpec(html, spec, pageUrl)[0].attrs.file).toBe(
+      "https://x.kr/down/3",
+    );
+  });
+
+  it("type이 url이 아닌 필드는 값을 그대로 둔다", () => {
+    const html = itemHtml('<a class="file" href="/down/3">첨부</a>');
+    const spec: CrawlSpec = {
+      strategy: "html",
+      itemSelector: "li.row",
+      fields: { file: { selector: ".file", attr: "href" } },
+    };
+    expect(applySpec(html, spec, pageUrl)[0].attrs.file).toBe("/down/3");
+  });
+
+  it("절대화할 수 없는 값은 필드를 비운다", () => {
+    const html = itemHtml('<a class="file" href="javascript:void(0)">첨부</a>');
+    const spec: CrawlSpec = {
+      strategy: "html",
+      itemSelector: "li.row",
+      fields: { file: { selector: ".file", attr: "href", type: "url" } },
+    };
+    expect(applySpec(html, spec, pageUrl)[0].attrs.file).toBeUndefined();
+  });
+});
+
+describe("fieldsFromRows", () => {
+  const row = (attrs: Record<string, unknown>): ExtractedRow => ({
+    title: "제목",
+    link: "https://x.kr/1",
+    publishedAt: null,
+    attrs,
+  });
+
+  it("spec의 label·type·role을 우선 사용한다", () => {
+    const spec: CrawlSpec = {
+      strategy: "html",
+      itemSelector: "li",
+      fields: {
+        due: {
+          selector: ".due",
+          label: "접수기간",
+          type: "date_range",
+          role: "deadline",
+        },
+      },
+    };
+    const f = fieldsFromRows([row({ due: "2026-11-30" })], spec).find(
+      (x) => x.key === "due",
+    );
+    expect(f?.label).toBe("접수기간");
+    expect(f?.type).toBe("date_range");
+    expect(f?.role).toBe("deadline");
+  });
+
+  it("spec이 없으면 기존 추정으로 폴백한다", () => {
+    const fields = fieldsFromRows([row({ deadline: "2026-11-30", views: 12 })]);
+    const deadline = fields.find((x) => x.key === "deadline");
+    const views = fields.find((x) => x.key === "views");
+    expect(deadline?.label).toBe("deadline");
+    expect(deadline?.role).toBe("deadline");
+    expect(views?.type).toBe("number");
+    expect(views?.role).toBe("none");
+  });
+
+  it("spec에 없는 attrs 키도 기존 추정으로 필드를 만든다", () => {
+    const spec: CrawlSpec = {
+      strategy: "html",
+      itemSelector: "li",
+      fields: { org: { selector: ".org", label: "주최기관" } },
+    };
+    const fields = fieldsFromRows([row({ org: "서울시", extra: "x" })], spec);
+    const extra = fields.find((x) => x.key === "extra");
+    expect(extra?.label).toBe("extra");
+    expect(extra?.role).toBe("none");
+  });
+
+  it("고정 3개 필드(title/link/published)가 항상 앞에 온다", () => {
+    const fields = fieldsFromRows([row({ org: "서울시" })]);
+    expect(fields.slice(0, 3).map((f) => f.key)).toEqual([
+      "title",
+      "link",
+      "published",
+    ]);
+    expect(fields.slice(0, 3).map((f) => f.sortOrder)).toEqual([0, 1, 2]);
   });
 });
