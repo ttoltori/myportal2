@@ -1,13 +1,38 @@
-import { reanalyzeResultSchema } from "@myportal/api-contracts";
+import { reanalyzeResultSchema, type ApplySpecRequest } from "@myportal/api-contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { errorCodes } from "../../errors/error-codes";
+import { AppError, errorCodes } from "../../errors/error-codes";
 import { analyzeListing, type ListingAnalysis } from "../crawl/analyze";
+import { extractRows } from "../crawl/collector";
 import type { CrawlSpec, ExtractedRow } from "../crawl/extract";
-import { reanalyzeSource } from "./reanalyze";
+import { fetchPage } from "../crawl/fetcher";
+import { renderPage } from "../crawl/render";
+import { applySpecForSource, reanalyzeSource } from "./reanalyze";
+import { reanalyzeSql } from "./reanalyze.sql";
 import { sourcesSql } from "./sources.sql";
 
 const dbQuery = vi.fn();
-vi.mock("../../config/db", () => ({ getDb: () => ({ query: dbQuery }) }));
+// 트랜잭션 안의 쿼리는 txQuery로 갈라 둔다 — 쓰기가 트랜잭션 안에서만 일어남을 검증하기 위함.
+const txQuery = vi.fn();
+vi.mock("../../config/db", () => ({
+  getDb: () => ({
+    query: dbQuery,
+    transaction: async (cb: (tx: { query: typeof txQuery }) => Promise<unknown>) =>
+      cb({ query: txQuery }),
+  }),
+}));
+// extractRows·fetchPage·renderPage는 네트워크가 걸리므로 교체한다. 나머지는 진짜를 쓴다.
+vi.mock("../crawl/collector", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../crawl/collector")>()),
+  extractRows: vi.fn(),
+}));
+vi.mock("../crawl/fetcher", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../crawl/fetcher")>()),
+  fetchPage: vi.fn(),
+}));
+vi.mock("../crawl/render", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../crawl/render")>()),
+  renderPage: vi.fn(),
+}));
 // fieldsFromRows는 진짜를 쓰고, 네트워크가 걸린 analyzeListing만 교체한다.
 vi.mock("../crawl/analyze", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../crawl/analyze")>()),
@@ -42,12 +67,14 @@ function setupDb(opts: {
   sourceExists?: boolean;
   storedSpec?: unknown;
   fields?: FieldRow[];
+  status?: string;
 }) {
   const {
     subscribed = true,
     sourceExists = true,
     storedSpec = null,
     fields = [],
+    status = "ok",
   } = opts;
   dbQuery.mockImplementation(async (sql: string) => {
     if (sql === sourcesSql.subscriptionForSource) {
@@ -62,6 +89,8 @@ function setupDb(opts: {
             url: SOURCE_URL,
             normalized_url: SOURCE_URL,
             fetch_strategy: "html",
+            status,
+            feed_url: null,
           },
         ],
       };
@@ -261,5 +290,262 @@ describe("reanalyzeSource", () => {
     for (const sql of sqls) {
       expect(sql).not.toMatch(/\b(insert|update|delete)\b/);
     }
+  });
+});
+
+// ── applySpecForSource ─────────────────────────────────
+
+const applySpec: CrawlSpec = { strategy: "html", itemSelector: "li", fields: {} };
+const TX_MAX_VERSION = 3;
+
+const applyFields = (...keys: string[]): ApplySpecRequest["fields"] =>
+  keys.map((key, i) => ({
+    key,
+    label: key,
+    type: "text",
+    role: "none",
+    visible: true,
+    sortOrder: i,
+  }));
+
+function applyInput(patch: Partial<ApplySpecRequest> = {}): ApplySpecRequest {
+  return {
+    spec: applySpec,
+    fields: applyFields("title", "link", "org", "deadline"),
+    fetchStrategy: "html",
+    ...patch,
+  };
+}
+
+const txSqls = () => txQuery.mock.calls.map((c) => String(c[0]));
+const txCallsOf = (sql: string) => txQuery.mock.calls.filter((c) => c[0] === sql);
+const savedSpecJson = () =>
+  JSON.parse(String(txCallsOf(sourcesSql.insertSpec)[0]?.[1]?.[2])) as CrawlSpec;
+
+describe("applySpecForSource", () => {
+  beforeEach(() => {
+    txQuery.mockImplementation(async (sql: string) => {
+      if (sql === reanalyzeSql.maxSpecVersion) return { rows: [{ v: TX_MAX_VERSION }] };
+      return { rows: [] };
+    });
+    vi.mocked(fetchPage).mockResolvedValue({
+      finalUrl: SOURCE_URL,
+      status: 200,
+      contentType: "text/html",
+      body: "<html></html>",
+      etag: null,
+      lastModified: null,
+    });
+    vi.mocked(renderPage).mockResolvedValue({
+      finalUrl: SOURCE_URL,
+      html: "<html>rendered</html>",
+    });
+    vi.mocked(extractRows).mockResolvedValue(rows);
+  });
+
+  // 검증 실패 시 트랜잭션이 열리지 않고, 트랜잭션 밖에서도 쓰기가 없어야 한다.
+  const expectNothingSaved = () => {
+    expect(txQuery).not.toHaveBeenCalled();
+    for (const c of dbQuery.mock.calls) {
+      expect(String(c[0]).toLowerCase()).not.toMatch(/\b(insert|update|delete)\b/);
+    }
+  };
+
+  it("spec이 null이면 VALIDATION_ERROR로 거부한다", async () => {
+    await expect(
+      applySpecForSource(USER, SOURCE, applyInput({ spec: null })),
+    ).rejects.toMatchObject({ code: errorCodes.VALIDATION_ERROR });
+    expectNothingSaved();
+  });
+
+  it("spec이 객체가 아니면 VALIDATION_ERROR로 거부한다", async () => {
+    for (const spec of ["문자열", 42, [applySpec]]) {
+      await expect(
+        applySpecForSource(USER, SOURCE, applyInput({ spec })),
+      ).rejects.toMatchObject({ code: errorCodes.VALIDATION_ERROR });
+    }
+    expectNothingSaved();
+  });
+
+  it("fields에 key가 중복되면 VALIDATION_ERROR로 거부한다", async () => {
+    await expect(
+      applySpecForSource(
+        USER,
+        SOURCE,
+        applyInput({ fields: applyFields("org", "link", "org") }),
+      ),
+    ).rejects.toMatchObject({ code: errorCodes.VALIDATION_ERROR });
+    expect(txCallsOf(sourcesSql.insertField)).toHaveLength(0);
+    expectNothingSaved();
+  });
+
+  it("추출이 0건이면 EXTRACTION_FAILED이고 스펙을 저장하지 않는다", async () => {
+    vi.mocked(extractRows).mockResolvedValue([]);
+    await expect(applySpecForSource(USER, SOURCE, applyInput())).rejects.toMatchObject({
+      code: errorCodes.EXTRACTION_FAILED,
+      statusCode: 422,
+    });
+    expect(txCallsOf(sourcesSql.insertSpec)).toHaveLength(0);
+    expectNothingSaved();
+  });
+
+  it("새 스펙을 maxVersion+1 버전·manual로 저장한다", async () => {
+    const res = await applySpecForSource(USER, SOURCE, applyInput());
+    const [call] = txCallsOf(sourcesSql.insertSpec);
+    expect(call?.[1]?.[0]).toBe(SOURCE);
+    expect(call?.[1]?.[1]).toBe(TX_MAX_VERSION + 1);
+    expect(call?.[1]?.[3]).toBe("manual");
+    expect(res.version).toBe(TX_MAX_VERSION + 1);
+  });
+
+  it("저장 순서는 deactivate → insertSpec → insertField → sources 갱신 → manual_actions다", async () => {
+    await applySpecForSource(USER, SOURCE, applyInput());
+    const watched = [
+      sourcesSql.deactivateSpecs,
+      sourcesSql.insertSpec,
+      sourcesSql.insertField,
+      reanalyzeSql.updateSourceAfterApply,
+      sourcesSql.insertManualAction,
+    ];
+    const order = txSqls().filter((s) => watched.includes(s));
+    expect(order).toEqual([
+      sourcesSql.deactivateSpecs,
+      sourcesSql.insertSpec,
+      sourcesSql.insertField,
+      sourcesSql.insertField,
+      sourcesSql.insertField,
+      sourcesSql.insertField,
+      reanalyzeSql.updateSourceAfterApply,
+      sourcesSql.insertManualAction,
+    ]);
+  });
+
+  it("fields를 insertField로 업서트한다", async () => {
+    const res = await applySpecForSource(USER, SOURCE, applyInput());
+    const calls = txCallsOf(sourcesSql.insertField);
+    expect(calls).toHaveLength(4);
+    expect(calls[2]?.[1]).toEqual([SOURCE, "org", "org", "text", "none", 2, true]);
+    expect(res.fieldsSaved).toBe(4);
+  });
+
+  it("사용자가 보낸 목록에 없는 기존 필드는 삭제하지 않는다", async () => {
+    await applySpecForSource(USER, SOURCE, applyInput());
+    const all = [...txSqls(), ...dbQuery.mock.calls.map((c) => String(c[0]))];
+    for (const sql of all) {
+      expect(sql.toLowerCase()).not.toMatch(/delete\s+from\s+myportal\.source_fields/);
+    }
+  });
+
+  it("fetch_strategy를 요청값으로 저장한다", async () => {
+    await applySpecForSource(USER, SOURCE, applyInput({ fetchStrategy: "rss" }));
+    const [call] = txCallsOf(reanalyzeSql.updateSourceAfterApply);
+    expect(call?.[1]?.slice(0, 3)).toEqual([SOURCE, "rss", "ok"]);
+  });
+
+  // 수집 경로의 rss 분기는 sources.feed_url만 읽는다. 새로 발견한 피드를
+  // 옮기지 않으면 HTML 페이지를 피드로 읽어 영구히 0건이 된다.
+  it("새로 발견한 spec.feedUrl을 sources.feed_url로 옮긴다", async () => {
+    await applySpecForSource(
+      USER,
+      SOURCE,
+      applyInput({
+        fetchStrategy: "rss",
+        spec: { strategy: "rss", feedUrl: "https://x.kr/rss.xml" },
+      }),
+    );
+    const [call] = txCallsOf(reanalyzeSql.updateSourceAfterApply);
+    expect(call?.[1]?.[3]).toBe("https://x.kr/rss.xml");
+  });
+
+  it("spec에 feedUrl이 없으면 null을 넘겨 기존 feed_url을 지우지 않는다", async () => {
+    await applySpecForSource(USER, SOURCE, applyInput());
+    const [call] = txCallsOf(reanalyzeSql.updateSourceAfterApply);
+    expect(call?.[1]?.[3]).toBeNull();
+    expect(reanalyzeSql.updateSourceAfterApply).toMatch(
+      /feed_url\s*=\s*coalesce\(\$4,\s*feed_url\)/,
+    );
+  });
+
+  it("status가 fail이면 ok로 바꾸고 consecutive_failures를 0으로 만든다", async () => {
+    setupDb({ status: "fail" });
+    await applySpecForSource(USER, SOURCE, applyInput());
+    const [call] = txCallsOf(reanalyzeSql.updateSourceAfterApply);
+    expect(call?.[1]?.[2]).toBe("ok");
+    // 리셋은 파라미터가 아니라 SQL 상수가 고정으로 처리한다.
+    expect(reanalyzeSql.updateSourceAfterApply).toMatch(/consecutive_failures\s*=\s*0/);
+  });
+
+  it("paused 소스는 status를 ok로 덮지 않는다", async () => {
+    setupDb({ status: "pause" });
+    await applySpecForSource(USER, SOURCE, applyInput());
+    const [call] = txCallsOf(reanalyzeSql.updateSourceAfterApply);
+    expect(call?.[1]?.[2]).toBe("pause");
+  });
+
+  it("spec.hint에 요청 hint를 저장하고 입력 spec은 변형하지 않는다", async () => {
+    await applySpecForSource(USER, SOURCE, applyInput({ hint: "장학" }));
+    expect(savedSpecJson().hint).toBe("장학");
+    expect(applySpec.hint).toBeUndefined();
+  });
+
+  it("hint가 없으면 spec을 그대로 저장한다", async () => {
+    await applySpecForSource(USER, SOURCE, applyInput());
+    expect(savedSpecJson()).toEqual(applySpec);
+  });
+
+  it("manual_actions에 apply-spec을 기록한다", async () => {
+    await applySpecForSource(USER, SOURCE, applyInput());
+    const [call] = txCallsOf(sourcesSql.insertManualAction);
+    expect(call?.[1]).toEqual([USER, SOURCE, "apply-spec"]);
+  });
+
+  it("fetch 실패면 스펙·필드는 저장하고 backfillFailed true로 응답한다", async () => {
+    vi.mocked(fetchPage).mockRejectedValue(
+      new AppError(errorCodes.URL_UNREACHABLE, "실패", 502),
+    );
+    const res = await applySpecForSource(USER, SOURCE, applyInput());
+    expect(res).toEqual({
+      version: TX_MAX_VERSION + 1,
+      fieldsSaved: 4,
+      backfilled: 0,
+      inserted: 0,
+      backfillFailed: true,
+    });
+    expect(extractRows).not.toHaveBeenCalled();
+    expect(txCallsOf(sourcesSql.insertSpec)).toHaveLength(1);
+  });
+
+  it("spec.render가 true면 renderPage로 페이지를 받는다", async () => {
+    await applySpecForSource(
+      USER,
+      SOURCE,
+      applyInput({ spec: { ...applySpec, render: true } }),
+    );
+    expect(renderPage).toHaveBeenCalledWith(SOURCE_URL);
+    expect(fetchPage).not.toHaveBeenCalled();
+    expect(vi.mocked(extractRows).mock.calls[0]?.[2]).toBe("<html>rendered</html>");
+  });
+
+  it("render가 아니면 fetchPage로 받는다", async () => {
+    await applySpecForSource(USER, SOURCE, applyInput());
+    expect(fetchPage).toHaveBeenCalledWith(SOURCE_URL);
+    expect(renderPage).not.toHaveBeenCalled();
+  });
+
+  it("fetchStrategy가 rss면 extractRows에 rss로 전달한다", async () => {
+    await applySpecForSource(USER, SOURCE, applyInput({ fetchStrategy: "rss" }));
+    expect(vi.mocked(extractRows).mock.calls[0]?.[0]).toMatchObject({
+      url: SOURCE_URL,
+      fetch_strategy: "rss",
+    });
+  });
+
+  it("구독하지 않은 소스는 FORBIDDEN이고 페이지를 받지 않는다", async () => {
+    setupDb({ subscribed: false });
+    await expect(applySpecForSource(USER, SOURCE, applyInput())).rejects.toMatchObject({
+      code: errorCodes.FORBIDDEN,
+    });
+    expect(fetchPage).not.toHaveBeenCalled();
+    expect(txQuery).not.toHaveBeenCalled();
   });
 });

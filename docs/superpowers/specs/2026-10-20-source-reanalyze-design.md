@@ -164,7 +164,8 @@ export const applySpecResponseSchema = z.object({
    b. insertSpec(sourceId, maxVersion+1, spec, 'manual')
    c. fields마다 insertField  (이미 on conflict (source_id,key) do update 업서트)
    d. 백필: 기존 항목 update / 신규 항목 insert / 적용자에게 읽음 마킹
-   e. sources.fetch_strategy = 요청값, status='ok', consecutive_failures=0
+   e. sources.fetch_strategy = 요청값, status='ok', consecutive_failures=0,
+      feed_url = coalesce(spec.feedUrl, feed_url)
    f. insertManualAction(userId, sourceId, 'apply-spec')
 4. 응답
 ```
@@ -181,6 +182,8 @@ export const applySpecResponseSchema = z.object({
 | `structured` | `parseJsonLdList` |
 | `html` | `applySpec(html, spec, finalUrl)` |
 | `link` | 재분석 자체를 허용하지 않는다(§8) |
+
+**`feed_url`을 함께 옮겨야 한다.** 재분석이 새로 발견한 피드 주소는 `spec.feedUrl`에만 있고 `sources.feed_url`은 여전히 null일 수 있다. 수집 경로(`collector.extractRows`)의 rss 분기는 **`sources.feed_url`만 읽으므로**, 옮기지 않으면 `feedTarget`이 HTML 페이지를 가리켜 `looksLikeFeed`가 실패하고 그 소스가 영구히 0건을 반환한다. `coalesce`로 갱신해 기존 값을 null로 지우지 않는다(`sourcesSql.updateAfterRun`과 같은 관례).
 
 `hint`가 주어지면 저장되는 `spec.hint`에 넣는다 — `repairSpec`이 이후 자가복구에서 재사용한다.
 
