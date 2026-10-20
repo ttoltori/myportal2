@@ -4,6 +4,7 @@ import type {
   ReanalyzeResult,
   SourceField,
 } from "@myportal/api-contracts";
+import type { DatabaseClient } from "@ttoltori/database";
 import { getDb } from "../../config/db";
 import { AppError, errorCodes, validationError } from "../../errors/error-codes";
 import { analyzeListing, fieldsFromRows } from "../crawl/analyze";
@@ -11,6 +12,7 @@ import { extractRows } from "../crawl/collector";
 import type { CrawlSpec, ExtractedRow } from "../crawl/extract";
 import { fetchPage } from "../crawl/fetcher";
 import { renderPage } from "../crawl/render";
+import { dedupeHash, safeNormalize } from "../crawl/url";
 import { reanalyzeSql } from "./reanalyze.sql";
 import { findSubscribedSource } from "./sources";
 import { sourcesSql } from "./sources.sql";
@@ -20,6 +22,10 @@ const SOURCE_STATUS_OK = "ok";
 const SOURCE_STATUS_PAUSED = "pause";
 const SPEC_CREATED_BY_MANUAL = "manual";
 const ACTION_APPLY_SPEC = "apply-spec";
+// collector.persistItems의 일반 수집 상한과 같다 — 백필이 정기 수집보다 많이 넣지 않게 한다.
+const BACKFILL_ROW_LIMIT = 200;
+const TITLE_MAX_LENGTH = 1000;
+const EXCERPT_MAX_LENGTH = 500;
 
 interface FieldRow {
   key: string;
@@ -190,6 +196,122 @@ async function fetchAndExtract(
   );
 }
 
+// ── 백필 ────────────────────────────────────────────────
+
+interface ExistingItem {
+  id: string;
+  normalized_url: string | null;
+  dedupe_hash: string;
+  collected_at: string | Date;
+}
+
+// collector.persistItems와 같은 규칙 — 같은 항목이 두 경로에서 다른 excerpt를 갖지 않게 한다.
+function excerptOf(attrs: Record<string, unknown>): string | null {
+  const text = typeof attrs.description === "string" ? attrs.description : attrs.summary;
+  return typeof text === "string" ? text.slice(0, EXCERPT_MAX_LENGTH) : null;
+}
+
+interface BackfillIndex {
+  // normalized_url → collected_at이 가장 오래된 1건. 과거에 제목이 달라 중복 삽입된
+  // 항목이 있으면 나머지는 건드리지 않는다(읽음·별표가 붙어 있을 수 있어 삭제도 하지 않는다).
+  byUrl: Map<string, ExistingItem>;
+  byHash: Map<string, ExistingItem>;
+  // 현재 점유된 dedupe_hash → 항목 id. 갱신·삽입이 일어날 때마다 함께 바꾼다.
+  hashOwner: Map<string, string>;
+}
+
+function indexExistingItems(items: readonly ExistingItem[]): BackfillIndex {
+  const byUrl = new Map<string, ExistingItem>();
+  const byHash = new Map<string, ExistingItem>();
+  const hashOwner = new Map<string, string>();
+  for (const it of items) {
+    byHash.set(it.dedupe_hash, it);
+    hashOwner.set(it.dedupe_hash, it.id);
+    if (it.normalized_url === null) continue;
+    const current = byUrl.get(it.normalized_url);
+    if (!current || new Date(it.collected_at) < new Date(current.collected_at)) {
+      byUrl.set(it.normalized_url, it);
+    }
+  }
+  return { byUrl, byHash, hashOwner };
+}
+
+// 추출 행으로 기존 항목을 갱신하고, 없는 항목은 삽입해 적용자에게만 읽음 처리한다.
+// dedupe_hash에 제목이 섞여 있으므로 normalized_url을 1차 키로 쓴다. 해시로만 찾으면
+// 제목 추출이 달라진 소스에서 기존 항목 전량이 중복 삽입된다.
+async function backfillItems(
+  tx: DatabaseClient,
+  userId: string,
+  sourceId: string,
+  extracted: readonly ExtractedRow[],
+): Promise<{ backfilled: number; inserted: number }> {
+  const { rows: existing } = await tx.query<ExistingItem>(reanalyzeSql.itemsForBackfill, [
+    sourceId,
+  ]);
+  const { byUrl, byHash, hashOwner } = indexExistingItems(existing);
+  const usedItemIds = new Set<string>();
+  // 공지 고정 + 본문 반복처럼 같은 링크가 두 번 나오는 페이지는 첫 행만 반영한다.
+  const seenUrls = new Set<string>();
+  let backfilled = 0;
+  let inserted = 0;
+
+  for (const row of extracted.slice(0, BACKFILL_ROW_LIMIT)) {
+    const normalizedUrl = row.link ? safeNormalize(row.link) : null;
+    if (normalizedUrl !== null) {
+      if (seenUrls.has(normalizedUrl)) continue;
+      seenUrls.add(normalizedUrl);
+    }
+    const newHash = dedupeHash(normalizedUrl ?? "", row.title);
+    // URL을 복원하지 못한 행만 해시로 찾는다. 이 경우 해시는 바뀌지 않는다.
+    const match = normalizedUrl !== null ? byUrl.get(normalizedUrl) : byHash.get(newHash);
+
+    if (match) {
+      if (usedItemIds.has(match.id)) continue;
+      // 새 해시가 다른 항목의 것이면 unique (source_id, dedupe_hash) 위반이다.
+      const owner = hashOwner.get(newHash);
+      if (owner !== undefined && owner !== match.id) continue;
+      usedItemIds.add(match.id);
+      await tx.query(reanalyzeSql.updateItemFromRow, [
+        match.id,
+        row.title.slice(0, TITLE_MAX_LENGTH),
+        row.link,
+        normalizedUrl,
+        newHash,
+        row.publishedAt,
+        excerptOf(row.attrs),
+        JSON.stringify(row.attrs),
+      ]);
+      hashOwner.delete(match.dedupe_hash);
+      hashOwner.set(newHash, match.id);
+      backfilled++;
+      continue;
+    }
+
+    // 기준선은 '최초 등록 시점의 과거분'이라는 뜻이므로 is_baseline=false로 둔다.
+    const { rows: ins } = await tx.query<{ id: string }>(sourcesSql.insertItem, [
+      sourceId,
+      row.title.slice(0, TITLE_MAX_LENGTH),
+      row.link,
+      normalizedUrl,
+      newHash,
+      row.publishedAt,
+      excerptOf(row.attrs),
+      JSON.stringify(row.attrs),
+      false,
+    ]);
+    const insertedId = ins[0]?.id;
+    // on conflict do nothing으로 행이 없으면 이미 있는 항목이다.
+    if (insertedId === undefined) continue;
+    hashOwner.set(newHash, insertedId);
+    inserted++;
+    // 내용은 과거의 것이므로 적용자의 "지난 방문 이후 신규"를 부풀리지 않게 읽음 처리한다.
+    // 다른 구독자에게는 실제로 처음 보이는 항목이라 그들의 상태는 만들지 않는다.
+    await tx.query(reanalyzeSql.markReadForUser, [userId, insertedId]);
+  }
+
+  return { backfilled, inserted };
+}
+
 // 재분석 미리보기에서 사용자가 확정한 스펙·필드를 저장한다.
 // 클라이언트가 보낸 spec을 신뢰하지 않고 추출을 다시 돌려 검증한 뒤에만 저장한다.
 export async function applySpecForSource(
@@ -251,9 +373,11 @@ export async function applySpecForSource(
       ]);
     }
 
-    // 백필 자리(스펙 §5 3-d): `extracted` 행으로 기존 항목을 갱신·삽입하고
-    // 적용자에게 읽음 마킹한다. backfillFailed면 extracted가 null이라 건너뛴다.
-    const backfill = { backfilled: 0, inserted: 0 };
+    // 백필(스펙 §5 3-d). 페이지 조회가 실패했으면 extracted가 null이라 건너뛴다.
+    const backfill =
+      extracted === null
+        ? { backfilled: 0, inserted: 0 }
+        : await backfillItems(tx, userId, sourceId, extracted);
 
     await tx.query(reanalyzeSql.updateSourceAfterApply, [
       sourceId,

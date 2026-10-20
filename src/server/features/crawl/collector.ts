@@ -16,7 +16,7 @@ import {
 import { enrichWithLlm } from "./llm/enrich";
 import { matchNewItemsForSubscribers } from "../keywords/match";
 import { clusterItems } from "./cluster";
-import { dedupeHash, normalizeUrl } from "./url";
+import { dedupeHash, normalizeUrl, safeNormalize } from "./url";
 import { sourcesSql } from "../sources/sources.sql";
 
 const BASELINE_SIZE = 20;
@@ -161,14 +161,6 @@ async function persistItems(
     if (ins[0]) insertedIds.push(ins[0].id);
   }
   return insertedIds;
-}
-
-function safeNormalize(url: string): string | null {
-  try {
-    return normalizeUrl(url);
-  } catch {
-    return null;
-  }
 }
 
 // ── main collect ───────────────────────────────────────

@@ -5,6 +5,7 @@ import { analyzeListing, type ListingAnalysis } from "../crawl/analyze";
 import { extractRows } from "../crawl/collector";
 import type { CrawlSpec, ExtractedRow } from "../crawl/extract";
 import { fetchPage } from "../crawl/fetcher";
+import { dedupeHash } from "../crawl/url";
 import { renderPage } from "../crawl/render";
 import { applySpecForSource, reanalyzeSource } from "./reanalyze";
 import { reanalyzeSql } from "./reanalyze.sql";
@@ -547,5 +548,215 @@ describe("applySpecForSource", () => {
     });
     expect(fetchPage).not.toHaveBeenCalled();
     expect(txQuery).not.toHaveBeenCalled();
+  });
+});
+
+// ── 백필 매칭 ──────────────────────────────────────────
+// dedupe_hash에 제목이 섞여 있어, URL을 1차 키로 쓰지 않으면 재적용이 전량 중복 삽입이 된다.
+
+interface ItemFixture {
+  id: string;
+  normalized_url: string | null;
+  dedupe_hash: string;
+  collected_at: string;
+}
+
+const item = (
+  id: string,
+  normalizedUrl: string | null,
+  hash: string,
+  collectedAt = "2026-01-01",
+): ItemFixture => ({
+  id,
+  normalized_url: normalizedUrl,
+  dedupe_hash: hash,
+  collected_at: collectedAt,
+});
+
+const URL_1 = "https://x.kr/v/1";
+const URL_2 = "https://x.kr/v/2";
+const URL_9 = "https://x.kr/v/9";
+
+const extractedRow = (
+  title: string,
+  link: string | null,
+  attrs: Record<string, unknown> = {},
+  publishedAt: string | null = null,
+): ExtractedRow => ({ title, link, publishedAt, attrs });
+
+// 파라미터 순서: id, title, url, normalized_url, dedupe_hash, published_at, excerpt, attrs
+const updateCalls = () => txCallsOf(reanalyzeSql.updateItemFromRow);
+const updatedIds = () => updateCalls().map((c) => c[1]?.[0]);
+const insertCalls = () => txCallsOf(sourcesSql.insertItem);
+const readMarkCalls = () => txCallsOf(reanalyzeSql.markReadForUser);
+
+describe("applySpecForSource — 백필 매칭", () => {
+  const existing = [
+    item("i1", URL_1, "h1", "2026-01-01"),
+    item("i2", URL_2, "h2", "2026-01-02"),
+    item("i3", null, dedupeHash("", "제목3"), "2026-01-03"),
+  ];
+
+  // insertItem은 새 id를 돌려주는 것으로 둔다. 삽입 id는 호출 순서대로 n1, n2, ...
+  function setupTx(items: ItemFixture[], opts: { insertConflicts?: boolean } = {}) {
+    let seq = 0;
+    txQuery.mockImplementation(async (sql: string) => {
+      if (sql === reanalyzeSql.maxSpecVersion) return { rows: [{ v: TX_MAX_VERSION }] };
+      if (sql === reanalyzeSql.itemsForBackfill) return { rows: items };
+      if (sql === sourcesSql.insertItem) {
+        return { rows: opts.insertConflicts ? [] : [{ id: `n${++seq}` }] };
+      }
+      return { rows: [] };
+    });
+  }
+
+  beforeEach(() => {
+    vi.mocked(fetchPage).mockResolvedValue({
+      finalUrl: SOURCE_URL,
+      status: 200,
+      contentType: "text/html",
+      body: "<html></html>",
+      etag: null,
+      lastModified: null,
+    });
+    setupTx(existing);
+  });
+
+  const apply = (extracted: ExtractedRow[]) => {
+    vi.mocked(extractRows).mockResolvedValue(extracted);
+    return applySpecForSource(USER, SOURCE, applyInput());
+  };
+
+  it("제목이 바뀐 항목을 normalized_url로 매칭해 중복 삽입하지 않는다", async () => {
+    const res = await apply([extractedRow("새 제목", URL_1, { org: "서울시" })]);
+    expect(updatedIds()).toEqual(["i1"]);
+    expect(insertCalls()).toHaveLength(0);
+    expect(res.backfilled).toBe(1);
+    expect(res.inserted).toBe(0);
+  });
+
+  it("매칭된 항목의 dedupe_hash를 새 제목 기준으로 갱신한다", async () => {
+    await apply([extractedRow("새 제목", URL_1)]);
+    expect(updateCalls()[0]?.[1]?.[4]).toBe(dedupeHash(URL_1, "새 제목"));
+  });
+
+  it("title·url·normalized_url·published_at·excerpt·attrs를 함께 갱신한다", async () => {
+    await apply([
+      extractedRow("새 제목", URL_1, { org: "서울시", description: "본문 요약" }, "2026-03-01"),
+    ]);
+    expect(updateCalls()[0]?.[1]).toEqual([
+      "i1",
+      "새 제목",
+      URL_1,
+      URL_1,
+      dedupeHash(URL_1, "새 제목"),
+      "2026-03-01",
+      "본문 요약",
+      JSON.stringify({ org: "서울시", description: "본문 요약" }),
+    ]);
+  });
+
+  it("URL이 없는 행은 dedupe_hash로 매칭한다", async () => {
+    const res = await apply([extractedRow("제목3", null, { org: "부산시" })]);
+    expect(updatedIds()).toEqual(["i3"]);
+    expect(insertCalls()).toHaveLength(0);
+    expect(res.backfilled).toBe(1);
+    // 해시가 바뀌지 않으므로 자기 자신과의 충돌로 오인해 건너뛰지 않아야 한다.
+    expect(updateCalls()[0]?.[1]?.[4]).toBe(dedupeHash("", "제목3"));
+  });
+
+  it("같은 normalized_url의 기존 항목이 2건이면 collected_at이 오래된 것만 갱신한다", async () => {
+    // 목록 순서와 무관하게 오래된 쪽(i1)이 선택되어야 하므로 일부러 최신 항목을 앞에 둔다.
+    setupTx([item("i1b", URL_1, "h1b", "2026-02-01"), item("i1", URL_1, "h1", "2026-01-01")]);
+    const res = await apply([extractedRow("새 제목", URL_1)]);
+    expect(updatedIds()).toEqual(["i1"]);
+    expect(insertCalls()).toHaveLength(0);
+    expect(res.backfilled).toBe(1);
+  });
+
+  it("추출 행 2건이 같은 normalized_url이면 첫 행만 반영한다", async () => {
+    const res = await apply([
+      extractedRow("공지 고정", URL_1, { org: "첫째" }),
+      extractedRow("본문 반복", URL_1, { org: "둘째" }),
+    ]);
+    expect(updateCalls()).toHaveLength(1);
+    expect(updateCalls()[0]?.[1]?.[1]).toBe("공지 고정");
+    expect(insertCalls()).toHaveLength(0);
+    expect(res.backfilled).toBe(1);
+  });
+
+  it("새 해시가 다른 기존 항목의 해시와 충돌하면 그 행을 건너뛴다", async () => {
+    // i2의 현재 해시가 i1의 새 해시와 같다 — 그대로 갱신하면 unique 위반이다.
+    const collidingHash = dedupeHash(URL_1, "새 제목");
+    setupTx([item("i1", URL_1, "h1"), item("i2", URL_2, collidingHash)]);
+    const res = await apply([extractedRow("새 제목", URL_1)]);
+    expect(updateCalls()).toHaveLength(0);
+    expect(insertCalls()).toHaveLength(0);
+    expect(res.backfilled).toBe(0);
+    expect(res.inserted).toBe(0);
+  });
+
+  it("매칭되지 않은 행은 is_baseline=false로 삽입한다", async () => {
+    const res = await apply([extractedRow("신규 공고", URL_9, { org: "대구시" })]);
+    expect(insertCalls()).toHaveLength(1);
+    expect(insertCalls()[0]?.[1]).toEqual([
+      SOURCE,
+      "신규 공고",
+      URL_9,
+      URL_9,
+      dedupeHash(URL_9, "신규 공고"),
+      null,
+      null,
+      JSON.stringify({ org: "대구시" }),
+      false,
+    ]);
+    expect(updateCalls()).toHaveLength(0);
+    expect(res.inserted).toBe(1);
+    expect(res.backfilled).toBe(0);
+  });
+
+  it("신규 삽입분을 적용자의 item_states에 읽음으로 마킹한다", async () => {
+    await apply([extractedRow("신규 공고", URL_9)]);
+    expect(readMarkCalls().map((c) => c[1])).toEqual([[USER, "n1"]]);
+  });
+
+  it("다른 사용자의 item_states는 만들지 않는다", async () => {
+    await apply([
+      extractedRow("신규 A", URL_9),
+      extractedRow("신규 B", "https://x.kr/v/10"),
+      extractedRow("새 제목", URL_1),
+    ]);
+    const marks = readMarkCalls();
+    expect(marks).toHaveLength(2);
+    for (const c of marks) expect(c[1]?.[0]).toBe(USER);
+  });
+
+  it("백필된 기존 항목에는 읽음 마킹을 하지 않는다", async () => {
+    await apply([extractedRow("새 제목", URL_1), extractedRow("제목3", null)]);
+    expect(updatedIds()).toEqual(["i1", "i3"]);
+    expect(readMarkCalls()).toHaveLength(0);
+  });
+
+  // insertItem의 on conflict do nothing은 행을 돌려주지 않는다 — 삽입된 것으로 세면 안 된다.
+  it("insertItem이 id를 돌려주지 않으면 삽입으로 세지도 읽음 마킹하지도 않는다", async () => {
+    setupTx(existing, { insertConflicts: true });
+    const res = await apply([extractedRow("신규 공고", URL_9)]);
+    expect(insertCalls()).toHaveLength(1);
+    expect(res.inserted).toBe(0);
+    expect(readMarkCalls()).toHaveLength(0);
+  });
+
+  it("백필 실패(extracted null)면 항목 조회·쓰기를 모두 건너뛴다", async () => {
+    vi.mocked(fetchPage).mockRejectedValue(new AppError(errorCodes.URL_UNREACHABLE, "실패", 502));
+    const res = await applySpecForSource(USER, SOURCE, applyInput());
+    expect(res.backfillFailed).toBe(true);
+    expect(txCallsOf(reanalyzeSql.itemsForBackfill)).toHaveLength(0);
+    expect(updateCalls()).toHaveLength(0);
+    expect(insertCalls()).toHaveLength(0);
+  });
+
+  it("항목 조회와 갱신 SQL은 select *를 쓰지 않는다", () => {
+    expect(reanalyzeSql.itemsForBackfill).not.toMatch(/select\s+\*/i);
+    expect(reanalyzeSql.itemsForBackfill).toMatch(/\$1/);
   });
 });

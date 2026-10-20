@@ -124,6 +124,17 @@ export function absolutize(href: string, baseUrl: string): string | null {
   }
 }
 
+// 정규화에 실패하는 URL(javascript: 등)은 null로 떨군다.
+// dedupeHash의 입력을 만드는 함수이므로 수집·백필이 반드시 같은 구현을 써야 한다 —
+// 한쪽만 규칙이 바뀌면 같은 항목에 다른 해시가 생겨 중복 삽입이 일어난다.
+export function safeNormalize(url: string): string | null {
+  try {
+    return normalizeUrl(url);
+  } catch {
+    return null;
+  }
+}
+
 export function dedupeHash(sourceUrl: string, title: string): string {
   const key = title.trim().toLowerCase().replace(/\s+/g, " ");
   return createHash("sha256")

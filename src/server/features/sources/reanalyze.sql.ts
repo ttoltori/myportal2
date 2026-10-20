@@ -23,4 +23,28 @@ export const reanalyzeSql = {
         feed_url = coalesce($4, feed_url)
     where id = $1
   `,
+  // 매칭에 필요한 컬럼만 읽는다. 소스의 항목 전체를 한 번에 메모리 맵으로 만든다.
+  itemsForBackfill: `
+    select id, normalized_url, dedupe_hash, collected_at
+    from myportal.items
+    where source_id = $1
+  `,
+  // 제목이 바뀌면 dedupe_hash도 바뀌므로 함께 갱신해야 다음 정기 수집이 같은 키를 본다.
+  // attrs는 병합한다: 새 추출에서 사라진 키도 source_fields가 유지되는 한 데스크가 라벨을
+  // 붙여 보여주므로 값을 지우지 않는다. published_at·excerpt는 새 값이 없을 때 기존 값을
+  // 지킨다. collected_at과 읽음·별표(item_states)는 건드리지 않는다.
+  updateItemFromRow: `
+    update myportal.items
+    set title = $2, url = $3, normalized_url = $4, dedupe_hash = $5,
+        published_at = coalesce($6, published_at),
+        excerpt = coalesce($7, excerpt),
+        attrs = attrs || $8::jsonb
+    where id = $1
+  `,
+  // 신규 삽입분을 적용자에게만 읽음 처리한다. runBaseline과 같은 방식이다.
+  markReadForUser: `
+    insert into myportal.item_states (user_id, item_id, read, read_at)
+    values ($1, $2, true, now())
+    on conflict (user_id, item_id) do nothing
+  `,
 } as const;
