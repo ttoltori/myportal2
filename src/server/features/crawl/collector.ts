@@ -13,6 +13,7 @@ import {
   type CrawlSpec,
   type ExtractedRow,
 } from "./extract";
+import { enrichWithLlm } from "./llm/enrich";
 import { matchNewItemsForSubscribers } from "../keywords/match";
 import { clusterItems } from "./cluster";
 import { dedupeHash, normalizeUrl } from "./url";
@@ -83,16 +84,29 @@ async function extractRows(
 // ── spec self-repair ───────────────────────────────────
 // When extraction keeps yielding zero rows, regenerate the DOM spec once
 // and retry. A successful repair is persisted as a new spec version.
-async function repairSpec(
+export async function repairSpec(
   sourceId: string,
   html: string,
   finalUrl: string,
   prevSpec?: CrawlSpec | null,
 ): Promise<{ spec: CrawlSpec; rows: ExtractedRow[] } | null> {
-  const regenerated = generateSpec(html, finalUrl, prevSpec?.hint);
-  if (!regenerated || regenerated.rows.length === 0) return null;
-  // 렌더링이 필요한 소스는 새 스펙에도 그 사실을 유지한다.
+  const heuristic = generateSpec(html, finalUrl, prevSpec?.hint);
+  // 휴리스틱이 실패해도 LLM 구제를 시도한다. userId가 null이면 시스템 상한을 쓴다.
+  const enriched = await enrichWithLlm({
+    purpose: "self-repair",
+    userId: null,
+    sourceId,
+    html,
+    pageUrl: finalUrl,
+    base: heuristic ? { spec: heuristic.spec, rows: heuristic.rows } : null,
+  });
+  if (!enriched || enriched.rows.length === 0) return null;
+
+  // 구제 모드 스펙에는 render/hint가 없으므로 이전 스펙 값을 다시 입힌다.
+  // 렌더링이 필요한 소스가 정적 HTML로 되돌아가 영구히 0건이 되는 것을 막는다.
+  const regenerated = { spec: enriched.spec, rows: enriched.rows };
   if (prevSpec?.render) regenerated.spec.render = true;
+  if (prevSpec?.hint && !regenerated.spec.hint) regenerated.spec.hint = prevSpec.hint;
 
   const db = getDb();
   const { rows: versions } = await db.query<{ v: string }>(

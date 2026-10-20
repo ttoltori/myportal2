@@ -7,6 +7,7 @@ import { generateSpec, type CrawlSpec } from "../crawl/extract";
 import { mapItem, type ItemRow } from "../desk/desk";
 import { deskSql } from "../desk/desk.sql";
 import { collectSource } from "../crawl/collector";
+import { enrichWithLlm } from "../crawl/llm/enrich";
 import { sourcesSql } from "./sources.sql";
 
 interface SubRow {
@@ -205,8 +206,16 @@ export async function rebuildSpec(
         finalUrl: r.finalUrl,
       }))
     : await fetchPage(String(source.url));
-  const generated = generateSpec(page.body, page.finalUrl, storedHint);
-  if (generated && storedRender) generated.spec.render = true;
+  const heuristic = generateSpec(page.body, page.finalUrl, storedHint);
+  // 휴리스틱이 실패해도 LLM 구제를 시도하고, 둘 다 실패할 때만 오류로 처리한다.
+  const generated = await enrichWithLlm({
+    purpose: "rebuild",
+    userId,
+    sourceId,
+    html: page.body,
+    pageUrl: page.finalUrl,
+    base: heuristic ? { spec: heuristic.spec, rows: heuristic.rows } : null,
+  });
   if (!generated) {
     throw new AppError(
       errorCodes.EXTRACTION_FAILED,
@@ -214,6 +223,9 @@ export async function rebuildSpec(
       422,
     );
   }
+  // 구제 모드 스펙에는 render/hint가 없으므로 기존 스펙 값을 다시 입힌다.
+  if (storedRender) generated.spec.render = true;
+  if (storedHint && !generated.spec.hint) generated.spec.hint = storedHint;
 
   const { rows: v } = await db.query<{ v: number }>(
     `select coalesce(max(version), 0) as v from myportal.crawl_specs where source_id = $1`,
