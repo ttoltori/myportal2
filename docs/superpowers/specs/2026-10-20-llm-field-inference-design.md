@@ -307,7 +307,7 @@ export function fieldsFromRows(
 | `type` | `fs.type` | `guessFieldType(sample)` |
 | `role` | `fs.role` | `key === "deadline" ? "deadline" : "none"` |
 
-호출처는 `analyze.ts`(preview 생성)와, 소스 등록 시 `source_fields`를 쓰는 경로다. 두 곳 모두 활성 스펙을 함께 넘긴다.
+호출처는 `analyze.ts:438` 한 곳(preview 생성)뿐이므로 2번째 인자를 optional로 두면 기존 코드가 깨지지 않는다. 소스 등록(`createSourceWithBaseline`)이 쓰는 `source_fields`는 프론트엔드가 보낸 `CreateSourceRequest.fields`에서 오고, 그 값은 미리보기 필드를 사용자가 수정한 결과다 — 즉 추론된 라벨·역할이 분석 응답 → 화면 → 등록 요청을 거쳐 그대로 저장된다. 별도 연결 작업이 필요 없다.
 
 ## 6. 환경변수
 
