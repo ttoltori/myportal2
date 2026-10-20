@@ -241,7 +241,9 @@ export function validateInferredFields(
    - `mode === "rescue"`에서 `title` 채움률 **80% 미만** → `null` 반환.
 
    `mode === "enrich"`에는 전체 폐기 조건이 없다. 보강 경로는 `baseSpec.itemSelector`를 바꾸지 않고 `fields`만 더하므로 `rows.length`와 `title`/`link` 값이 구조적으로 변하지 않는다 — 추출되는 항목 수를 LLM이 줄일 방법이 없다. 따라서 필드 단위 폐기만으로 충분하다.
-5. 통과한 필드가 0개면 `null`을 반환한다. 호출자는 휴리스틱 결과를 그대로 쓴다.
+5. `mode === "enrich"`에서 통과한 필드가 0개면 `null`을 반환한다. 호출자는 휴리스틱 결과를 그대로 쓴다.
+
+   `mode === "rescue"`에서는 통과 필드가 0개여도 **성공으로 본다.** 구제 경로에는 폴백할 휴리스틱 결과가 없고, 유효한 `itemSelector`를 찾은 것만으로 그 URL이 `outcome="detail"`에서 `outcome="list"`로 바뀐다 — 제목·링크·게시일만 있는 게시판이 구제 대상의 다수이므로, 추가 필드를 못 건졌다고 목록 추출까지 버리면 그런 사이트는 끝까지 등록되지 않는다.
 
 ### 4.4 `usage.ts` — 일별 상한 (NFR-L4)
 
