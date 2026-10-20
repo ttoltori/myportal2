@@ -173,7 +173,7 @@ export const applySpecResponseSchema = z.object({
 
 ### 전략별 추출
 
-요청 `fetchStrategy`에 따라 추출 경로가 다르다 — 재분석이 RSS 피드를 발견했다면 `applySpec`이 아니라 `parseFeed`를 써야 한다. `collector.ts`의 `extractRows`가 이미 같은 분기를 갖고 있으므로 그 함수를 재사용한다(소스 행 대신 `{fetch_strategy, feed_url}` 형태의 최소 인자를 받도록 시그니처를 넓힌다).
+요청 `fetchStrategy`에 따라 추출 경로가 다르다 — 재분석이 RSS 피드를 발견했다면 `applySpec`이 아니라 `parseFeed`를 써야 한다. `collector.ts`의 `extractRows`가 이미 같은 분기를 갖고 있고 시그니처도 이미 `{ url, fetch_strategy, feed_url }` 최소 인자를 받으므로, **`export`만 붙여 그대로 재사용한다.** 분기를 다시 쓰지 않는다.
 
 | `fetchStrategy` | 추출 |
 |---|---|
@@ -325,7 +325,7 @@ interface FieldPreviewTableProps {
 1. `analyze.ts`에서 `analyzeListing` 코어 분리 — 기존 테스트 11건 통과 확인.
 2. `api-contracts`에 `reanalyzeRequestSchema`/`reanalyzeResultSchema`/`applySpecRequestSchema`/`applySpecResponseSchema` 추가.
 3. `reanalyzeSource` 구현 + 테스트.
-4. `collector.ts`의 `extractRows` 시그니처를 소스 행 대신 `{fetch_strategy, feed_url}` 최소 인자로 넓혀 재사용 가능하게 한다 — 기존 호출부 동작 불변.
+4. `collector.ts`의 `extractRows`에 `export`를 붙여 재사용 가능하게 한다 — 시그니처는 이미 맞으므로 변경 없음.
 5. 백필 SQL을 `sources.sql.ts`에 추가 (`findItemByNormalizedUrl`, `findItemByHash`, `updateItemFromRow`).
 6. `applySpecForSource` 구현 + 테스트 (백필 매칭이 핵심).
 7. 라우트 2개 추가, `rebuild-spec` 라우트와 `rebuildSpec()` 제거.
