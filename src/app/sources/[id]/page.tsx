@@ -83,6 +83,8 @@ export default function SourceDetailPage() {
   const [selVersion, setSelVersion] = useState<number | null>(null);
   const [actionLog, setActionLog] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  // 패널이 열렸는지와 결과가 있는지를 분리한다. 그래야 분석 전에 힌트를 고칠 수 있다.
+  const [panelOpen, setPanelOpen] = useState(false);
   const [reanalysis, setReanalysis] = useState<ReanalyzeResult | null>(null);
   const [panelFields, setPanelFields] = useState<SourceField[]>([]);
   const [panelHint, setPanelHint] = useState("");
@@ -145,10 +147,11 @@ export default function SourceDetailPage() {
     setBusy(true);
     log("다시 분석 요청 … 진행 중");
     try {
-      const res = await api.sources.reanalyze(
-        sourceId,
-        panelHint.trim() ? { hint: panelHint.trim() } : undefined,
-      );
+      // 박스를 비운 것은 '힌트 없이 간다'는 의사다. 생략하면 서버가 저장된
+      // 힌트를 되살려 사용자가 낡은 힌트를 버릴 수 없게 된다.
+      const res = await api.sources.reanalyze(sourceId, {
+        hint: panelHint.trim(),
+      });
       setReanalysis(res);
       setPanelFields(res.preview?.fields ?? []);
       log(`다시 분석 완료 (${res.outcome})`);
@@ -217,6 +220,28 @@ export default function SourceDetailPage() {
   const sub = detail.subscription;
   const selectedVersion = detail.versions.find((v) => v.version === selVersion);
 
+  // 활성 스펙에 저장된 힌트. 낡아 있을 수 있으므로 보여주고 고치게 한다.
+  const activeSpec = detail.versions.find((v) => v.active)?.spec;
+  const storedHint =
+    activeSpec && typeof activeSpec === "object" && activeSpec !== null
+      ? ((activeSpec as { hint?: unknown }).hint ?? "")
+      : "";
+
+  function openReanalyzePanel() {
+    setPanelHint(typeof storedHint === "string" ? storedHint : "");
+    setReanalysis(null);
+    setPanelFields([]);
+    setPageTextFilter("");
+    setPanelOpen(true);
+  }
+
+  function closeReanalyzePanel() {
+    setPanelOpen(false);
+    setReanalysis(null);
+    setPanelFields([]);
+    setPageTextFilter("");
+  }
+
   const previewFieldKeys = new Set(
     (reanalysis?.preview?.fields ?? []).map((f) => f.key),
   );
@@ -243,9 +268,17 @@ export default function SourceDetailPage() {
             <h1 style={{ fontSize: 22, fontWeight: 700 }}>
               {sub.displayName}
             </h1>
-            <div className="font-mono text-ink-2 mt-1" style={{ fontSize: 12 }}>
+            {/* globals.css가 a의 밑줄을 지우므로 명시해야 클릭 가능함이 드러난다. */}
+            <a
+              className="font-mono text-ink-2 mt-1 underline"
+              style={{ fontSize: 12, display: "inline-block" }}
+              href={sub.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="원문 사이트를 새 탭에서 열기"
+            >
               {sub.url}
-            </div>
+            </a>
             <div className="flex items-center gap-2 mt-2">
               <span className={STATUS_STAMP[sub.status] ?? "stamp"}>
                 {STATUS_LABELS[sub.status] ?? sub.status}
@@ -270,7 +303,7 @@ export default function SourceDetailPage() {
             <button
               className="btn"
               disabled={busy || sub.fetchStrategy === "link"}
-              onClick={() => void reanalyze()}
+              onClick={() => openReanalyzePanel()}
             >
               다시 분석
             </button>
@@ -291,14 +324,14 @@ export default function SourceDetailPage() {
           </div>
         )}
 
-        {reanalysis && (
+        {panelOpen && (
           <div
             className="mt-4"
             style={{ border: "1px solid var(--rule)", padding: "14px 16px" }}
           >
             <div className="flex items-baseline justify-between">
               <div style={{ fontSize: 15, fontWeight: 700 }}>재분석</div>
-              {reanalysis.preview && (
+              {reanalysis?.preview && (
                 <div className="font-mono text-ink-2" style={{ fontSize: 11 }}>
                   최근 {reanalysis.preview.rows.length}건 · 필드{" "}
                   {panelFields.length}개 · {reanalysis.preview.fetchStrategy}
@@ -307,6 +340,7 @@ export default function SourceDetailPage() {
               )}
             </div>
 
+            {reanalysis && (
             <div
               className="font-mono mt-2"
               style={{
@@ -341,6 +375,7 @@ export default function SourceDetailPage() {
                 </div>
               ))}
             </div>
+            )}
 
             <label
               className="font-mono text-ink-2"
@@ -348,24 +383,39 @@ export default function SourceDetailPage() {
             >
               목록 항목 힌트 (선택)
             </label>
+            {storedHint && (
+              <div
+                className="font-mono text-ink-2"
+                style={{ marginBottom: 4, fontSize: 11 }}
+              >
+                저장된 힌트 ‘{String(storedHint)}’를 채웠습니다 — 낡았으면 고치거나
+                비우세요.
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <input
                 className="input-line"
                 style={{ fontSize: 13 }}
-                placeholder="비워 두면 저장된 힌트를 사용합니다 — 목록 항목 텍스트 일부"
+                placeholder="비우면 힌트 없이 자동 추정합니다 — 목록 항목 텍스트 일부"
                 value={panelHint}
                 onChange={(e) => setPanelHint(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void reanalyze();
+                  }
+                }}
               />
               <button
                 className="btn shrink-0"
                 disabled={busy || sub.fetchStrategy === "link"}
                 onClick={() => void reanalyze()}
               >
-                {busy ? "분석 중…" : "다시 분석"}
+                {busy ? "분석 중…" : reanalysis ? "다시 분석" : "분석 시작"}
               </button>
             </div>
 
-            {reanalysis.pageText && (
+            {reanalysis?.pageText && (
               <div className="mt-4">
                 <div className="flex items-baseline justify-between">
                   <div style={{ fontSize: 13, fontWeight: 700 }}>
@@ -407,7 +457,7 @@ export default function SourceDetailPage() {
               </div>
             )}
 
-            {reanalysis.outcome === "list" && reanalysis.preview && (
+            {reanalysis?.outcome === "list" && reanalysis.preview && (
               <div className="mt-4">
                 <FieldPreviewTable
                   fields={panelFields}
@@ -437,7 +487,7 @@ export default function SourceDetailPage() {
               <button
                 className="btn"
                 disabled={busy}
-                onClick={() => setReanalysis(null)}
+                onClick={() => closeReanalyzePanel()}
               >
                 취소
               </button>

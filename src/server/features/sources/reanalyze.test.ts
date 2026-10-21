@@ -243,6 +243,22 @@ describe("reanalyzeSource", () => {
     expect(vi.mocked(analyzeListing).mock.calls[0]?.[0].hint).toBe("장학");
   });
 
+  // 재분석 화면은 저장된 힌트를 입력박스에 채워 보여준다. 사용자가 그것을 지운 것을
+  // "저장된 힌트 재사용"으로 읽으면 낡은 힌트를 버릴 방법이 없어진다.
+  it("빈 문자열 hint는 저장된 hint를 무시하고 힌트 없이 분석한다", async () => {
+    setupDb({ storedSpec: { strategy: "html", itemSelector: "li", hint: "공고" } });
+    await reanalyzeSource(USER, SOURCE, "");
+    expect(vi.mocked(analyzeListing).mock.calls[0]?.[0].hint).toBeUndefined();
+  });
+
+  it("저장된 hint가 없으면 생략도 빈 문자열도 힌트 없이 분석한다", async () => {
+    setupDb({ storedSpec: { strategy: "html", itemSelector: "li" } });
+    await reanalyzeSource(USER, SOURCE);
+    expect(vi.mocked(analyzeListing).mock.calls[0]?.[0].hint).toBeUndefined();
+    await reanalyzeSource(USER, SOURCE, "");
+    expect(vi.mocked(analyzeListing).mock.calls[1]?.[0].hint).toBeUndefined();
+  });
+
   it("purpose는 rebuild로 전달된다", async () => {
     await reanalyzeSource(USER, SOURCE);
     expect(vi.mocked(analyzeListing)).toHaveBeenCalledWith(

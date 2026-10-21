@@ -74,8 +74,16 @@ export async function reanalyzeSource(
     db.query<FieldRow>(sourcesSql.fieldsForSource, [sourceId]),
   ]);
 
+  // hint 생략은 "저장된 것을 쓴다", 빈 문자열은 "힌트 없이 간다"는 명시적 의사다.
+  // 둘을 같게 취급하면 사용자가 낡은 힌트를 지울 방법이 없어진다.
   const effectiveHint =
-    hint ?? (activeSpec.rows[0] ? storedHintOf(activeSpec.rows[0].spec) : undefined);
+    hint === undefined
+      ? activeSpec.rows[0]
+        ? storedHintOf(activeSpec.rows[0].spec)
+        : undefined
+      : hint === ""
+        ? undefined
+        : hint;
 
   const listing = await analyzeListing({
     userId,

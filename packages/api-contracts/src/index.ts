@@ -279,8 +279,18 @@ export type CreateSourceResponse = z.infer<typeof createSourceResponseSchema>;
 // 등록된 소스를 다시 분석(reanalyze)해 미리보기를 확인한 뒤 적용(apply-spec)하는 2단계 흐름.
 
 export const reanalyzeRequestSchema = z.object({
-  // 저장된 spec.hint가 기본값으로 쓰이고, 값을 주면 그것으로 덮는다.
-  hint: z.string().trim().min(2).max(500).optional(),
+  // 세 가지 의사를 구분한다.
+  //   생략  → 저장된 spec.hint를 그대로 쓴다 (호출처가 힌트를 다루지 않는 경우)
+  //   ""    → 힌트 없이 자동 추정한다 (저장된 힌트가 낡았을 때 버리는 수단)
+  //   값    → 그 값으로 덮는다
+  // 재분석 화면은 저장된 힌트를 입력박스에 채워 보여주므로, 사용자가 지운 것을
+  // "저장된 힌트 재사용"으로 해석하면 의도와 정반대가 된다.
+  hint: z
+    .string()
+    .trim()
+    .max(500)
+    .refine((v) => v === "" || v.length >= 2, "힌트는 2자 이상이어야 합니다.")
+    .optional(),
 });
 export type ReanalyzeRequest = z.infer<typeof reanalyzeRequestSchema>;
 
