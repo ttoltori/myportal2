@@ -111,7 +111,7 @@ export default function SchemaMapPage() {
         className="px-6 py-5"
         style={{ maxWidth: 1400, margin: "0 auto", paddingBottom: 48 }}
       >
-        <h1 style={{ fontSize: 20, fontWeight: 700 }}>구조 조망</h1>
+        <h1 style={{ fontSize: 20, fontWeight: 700 }}>추출 항목</h1>
         <div className="rule-double" style={{ marginTop: 4, marginBottom: 6 }} />
         <div className="font-mono text-ink-2" style={{ fontSize: 11, marginBottom: 12 }}>
           소스 {totalSources} · 마감일 필드 보유 {deadlineCount} · 고유 필드{" "}

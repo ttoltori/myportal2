@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type {
   Category,
@@ -60,8 +60,8 @@ function maskEmail(email: string): string {
 
 export default function DigestPage() {
   const router = useRouter();
-  const appRef = useRef<HTMLDivElement>(null);
-  useResizable(appRef, "myportal-resize-digest", {
+  const [appEl, setAppEl] = useState<HTMLDivElement | null>(null);
+  useResizable(appEl, "myportal-resize-digest", {
     panes: [{ default: 380, min: 300, max: 600 }, { min: 640 }],
     flexIndex: 1,
   });
@@ -143,7 +143,7 @@ export default function DigestPage() {
     <div>
       <Masthead />
       <div
-        ref={appRef}
+        ref={setAppEl}
         style={{
           display: "grid",
           gridTemplateColumns: "var(--pane-0-width, 380px) minmax(640px, 1fr)",

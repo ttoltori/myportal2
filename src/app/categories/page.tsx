@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Category, Subscription, Tag } from "@myportal/api-contracts";
 import { api, isAuthError, ApiError } from "@/lib/api";
@@ -28,8 +28,8 @@ export default function CategoriesPage() {
   const [newTagName, setNewTagName] = useState("");
   const [dropTarget, setDropTarget] = useState<string | "root" | null>(null);
 
-  const gridRef = useRef<HTMLDivElement>(null);
-  useResizable(gridRef, "myportal-resize-categories", {
+  const [gridEl, setGridEl] = useState<HTMLDivElement | null>(null);
+  useResizable(gridEl, "myportal-resize-categories", {
     panes: [{ default: 420, min: 280, max: 640 }, { min: 420 }],
     flexIndex: 1,
   });
@@ -471,7 +471,7 @@ export default function CategoriesPage() {
     <div>
       <Masthead />
       <div
-        ref={gridRef}
+        ref={setGridEl}
         style={{
           display: "grid",
           gridTemplateColumns: "var(--pane-0-width, 420px) minmax(0,1fr)",

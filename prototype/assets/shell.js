@@ -23,7 +23,7 @@
     { id: 'add-source', label: '소스 등록', href: 'add-source.html' },
     { id: 'sources', label: '소스', href: 'sources.html' },
     { id: 'categories', label: '분류 정리', href: 'categories.html' },
-    { id: 'schema-map', label: '구조 조망', href: 'schema-map.html' },
+    { id: 'schema-map', label: '추출 항목', href: 'schema-map.html' },
     { id: 'keywords', label: '키워드', href: 'keywords.html' },
     { id: 'digest', label: '다이제스트', href: 'digest.html' }
   ];

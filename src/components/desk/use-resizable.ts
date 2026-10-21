@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, type RefObject } from "react";
+import { useEffect } from "react";
 
 // 프로토타입 assets/resizable.js의 React 훅 이식.
 // 그리드 컨테이너의 --pane-N-width CSS 변수만 갱신하므로
@@ -50,8 +50,11 @@ export interface ResizableOptions {
   flexIndex?: number;
 }
 
+// 대상 요소가 데이터 로딩 전에는 렌더링되지 않는 화면이 있으므로
+// RefObject가 아니라 요소 자체를 받는다 — 호출부는 콜백 ref + useState로
+// 요소가 마운트된 뒤 effect가 실행되도록 해야 한다.
 export function useResizable(
-  ref: RefObject<HTMLElement | null>,
+  el: HTMLElement | null,
   storageKey: string,
   opts?: ResizableOptions,
 ): void {
@@ -61,7 +64,7 @@ export function useResizable(
     .map((p) => `${p.min}-${p.max ?? ""}-${p.default ?? ""}`)
     .join("|");
   useEffect(() => {
-    const containerEl = ref.current;
+    const containerEl = el;
     if (!containerEl) return;
     const paneEls = Array.from(containerEl.children).filter(
       (c): c is HTMLElement => c instanceof HTMLElement,
@@ -249,5 +252,5 @@ export function useResizable(
       cleanups.forEach((fn) => fn());
       splitters.forEach((sp) => sp.remove());
     };
-  }, [ref, storageKey, flexIndex, panesKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [el, storageKey, flexIndex, panesKey]); // eslint-disable-line react-hooks/exhaustive-deps
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type {
   Category,
@@ -59,8 +59,8 @@ const newDraft = (): Draft => ({
 
 export default function KeywordsPage() {
   const router = useRouter();
-  const appRef = useRef<HTMLDivElement>(null);
-  useResizable(appRef, "myportal-resize-keywords", {
+  const [appEl, setAppEl] = useState<HTMLDivElement | null>(null);
+  useResizable(appEl, "myportal-resize-keywords", {
     panes: [{ default: 340, min: 260, max: 560 }, { min: 640 }],
     flexIndex: 1,
   });
@@ -261,7 +261,7 @@ export default function KeywordsPage() {
     <div>
       <Masthead />
       <div
-        ref={appRef}
+        ref={setAppEl}
         style={{
           display: "grid",
           gridTemplateColumns: "var(--pane-0-width, 340px) minmax(640px, 1fr)",

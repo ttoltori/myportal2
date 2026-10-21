@@ -131,8 +131,11 @@ export function DeskClient() {
   const [rightDrawer, setRightDrawer] = useState(false);
   const lastBulk = useRef<{ ids: string[]; prevRead: Record<string, boolean> } | null>(null);
 
-  const appRef = useRef<HTMLDivElement>(null);
-  useResizable(appRef, "myportal-resize-index");
+  // 데이터 로딩 전에는 #app이 렌더링되지 않으므로 콜백 ref로
+  // 요소 마운트를 감지한다 — useResizable에 RefObject를 넘기면
+  // 마운트 시점에 current가 null인 채로 effect가 끝난다.
+  const [appEl, setAppEl] = useState<HTMLDivElement | null>(null);
+  useResizable(appEl, "myportal-resize-index");
 
   // ── 데이터 로드 ─────────────────────────────────────
   useEffect(() => {
@@ -804,7 +807,7 @@ export function DeskClient() {
 
       <div
         id="app"
-        ref={appRef}
+        ref={setAppEl}
         style={{
           display: "grid",
           gridTemplateColumns:

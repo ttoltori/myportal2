@@ -16,7 +16,7 @@ const NAV_ITEMS = [
   { id: "add-source", label: "소스 등록", href: "/add-source" },
   { id: "sources", label: "소스", href: "/sources" },
   { id: "categories", label: "분류 정리", href: "/categories" },
-  { id: "schema-map", label: "구조 조망", href: "/schema-map" },
+  { id: "schema-map", label: "추출 항목", href: "/schema-map" },
   { id: "keywords", label: "키워드", href: "/keywords" },
   { id: "digest", label: "다이제스트", href: "/digest" },
 ];
