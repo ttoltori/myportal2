@@ -53,6 +53,8 @@ export default function AddSourcePage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
   const [pageTextFilter, setPageTextFilter] = useState("");
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [creatingCategory, setCreatingCategory] = useState(false);
 
   useEffect(() => {
     api.categories
@@ -76,6 +78,34 @@ export default function AddSourcePage() {
     },
     [categoriesById],
   );
+
+  // 선택 상자가 부모 지정 역할을 겸한다 — (미분류)면 최상위, 아니면 그 하위.
+  // 목록을 다시 받아오는 이유: 서버가 sort_order·name으로 정렬하므로 새 항목을
+  // 직접 끼워 넣으면 경로 표시 순서가 화면마다 달라질 수 있다.
+  async function addCategory() {
+    const name = newCategoryName.trim();
+    if (!name || creatingCategory) return;
+    setCreatingCategory(true);
+    try {
+      const created = await api.categories.create({
+        name,
+        parentId: categoryId || null,
+      });
+      setCategories(await api.categories.list());
+      setCategoryId(created.id);
+      setNewCategoryName("");
+      showToast(`카테고리 '${created.name}' 추가`);
+    } catch (err) {
+      if (isAuthError(err)) {
+        router.replace("/login");
+        return;
+      }
+      // 4단계를 만들려 하면 서버의 CATEGORY_DEPTH_EXCEEDED 메시지가 그대로 뜬다.
+      showToast(err instanceof ApiError ? err.message : "카테고리 추가 실패");
+    } finally {
+      setCreatingCategory(false);
+    }
+  }
 
   const logTime = useCallback((): string => {
     const t = new Date();
@@ -481,6 +511,37 @@ export default function AddSourcePage() {
                       </option>
                     ))}
                   </select>
+                  <div className="mt-1 flex items-center gap-2">
+                    <input
+                      className="input-line"
+                      style={{ fontSize: 13, flex: 1 }}
+                      placeholder="새 카테고리 이름"
+                      value={newCategoryName}
+                      onChange={(e) => setNewCategoryName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void addCategory();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={!newCategoryName.trim() || creatingCategory}
+                      onClick={() => void addCategory()}
+                    >
+                      + 추가
+                    </button>
+                  </div>
+                  <div
+                    className="font-mono text-ink-2 mt-1"
+                    style={{ fontSize: 11 }}
+                  >
+                    {categoryId
+                      ? `‘${categoryPath(categoryId)}’ 하위에 추가`
+                      : "최상위에 추가"}
+                  </div>
                 </div>
                 <div>
                   <label
