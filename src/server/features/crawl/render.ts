@@ -1,11 +1,18 @@
-import type { Browser, LaunchOptions } from "playwright-core";
+import type { Browser, LaunchOptions, Page } from "playwright-core";
 import { env } from "../../config/env";
 import { AppError, errorCodes } from "../../errors/error-codes";
 import { assertPublicUrl } from "./url";
 
 const GOTO_TIMEOUT_MS = 30_000;
 // SPA가 데이터를 비동기로 채우므로 로드 후 네트워크가 잠잠해질 때까지 짧게 더 기다린다.
-const SETTLE_TIMEOUT_MS = 4_000;
+const SETTLE_TIMEOUT_MS = 6_000;
+// hash 라우팅 SPA는 초기 로드 후 라우터가 API를 호출하기까지 시간이 걸린다.
+// 첫 networkidle이 SPA 초기화 전에 발생하는 것을 보완하기 위한 대기 시간.
+const SPA_ROUTE_DELAY_MS = 1_000;
+// networkidle 이후에도 DOM이 안정될 때까지 폴링한다.
+const STABLE_POLLS = 3;
+const POLL_INTERVAL_MS = 500;
+const MAX_STABILIZE_MS = 8_000;
 const MAX_HTML_BYTES = 6 * 1024 * 1024;
 // headless UA로 요청하면 차단하는 사이트가 있어 실제 Chrome UA를 쓴다.
 const BROWSER_UA =
@@ -78,9 +85,20 @@ export async function renderPage(rawUrl: string): Promise<RenderedPage> {
         waitUntil: "domcontentloaded",
         timeout: GOTO_TIMEOUT_MS,
       });
+      // SPA가 데이터를 비동기로 채우므로 networkidle까지 기다린다.
       await page
         .waitForLoadState("networkidle", { timeout: SETTLE_TIMEOUT_MS })
         .catch(() => {});
+      // hash 라우팅 SPA(#/path)는 초기 로드 후 라우터가 API를 호출하기까지
+      // 시간이 걸린다. 첫 networkidle이 SPA 초기화 전에 발생할 수 있으므로
+      // 짧은 대기 후 networkidle을 다시 기다려 SPA의 API 호출까지 잡는다.
+      await page.waitForTimeout(SPA_ROUTE_DELAY_MS);
+      await page
+        .waitForLoadState("networkidle", { timeout: SETTLE_TIMEOUT_MS })
+        .catch(() => {});
+      // networkidle 이후에도 DOM 렌더링이 진행 중일 수 있으므로
+      // 내용이 안정될 때까지 폴링한다.
+      await waitForDomStabilization(page);
     } catch {
       // 타임아웃이 나도 그 시점까지 로드된 DOM으로 추출을 시도한다.
     }
@@ -97,5 +115,25 @@ export async function renderPage(rawUrl: string): Promise<RenderedPage> {
     return { finalUrl, html };
   } finally {
     await browser.close().catch(() => {});
+  }
+}
+
+// SPA가 networkidle 이후에도 DOM을 계속 변경하는 경우,
+// 페이지 내용이 더 이상 변하지 않을 때까지 폴링한다.
+// hash 라우팅 SPA는 초기 로드 후 라우터가 API를 호출하고
+// 렌더링을 완료하는 데 시간이 더 필요할 수 있다.
+async function waitForDomStabilization(page: Page): Promise<void> {
+  let lastContent = await page.content();
+  let stable = 0;
+  const deadline = Date.now() + MAX_STABILIZE_MS;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(POLL_INTERVAL_MS);
+    const current = await page.content();
+    if (current === lastContent) {
+      if (++stable >= STABLE_POLLS) return;
+    } else {
+      stable = 0;
+      lastContent = current;
+    }
   }
 }

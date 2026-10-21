@@ -324,6 +324,27 @@ describe("generateSpec", () => {
     expect(gen!.hintMatched).toBe(true);
     expect(gen!.spec.itemSelector).toBe("#dataList > tr");
   });
+
+  // sbiz24.kr 같은 SPA 사이트는 href="#/extldPbanc/PBLN_123" 형태로
+  // hash 라우팅을 사용한다. 이전에는 #로 시작하는 href를 무조건 거부해서
+  // SPA 사이트의 목록을 전혀 추출하지 못했다.
+  it("SPA hash 라우팅 링크(#/path)를 유효한 링크로 추출한다", () => {
+    const html = `<html><body><table class="q-table"><tbody>
+      ${[1, 2, 3, 4, 5]
+        .map(
+          (i) =>
+            `<tr class="row"><td><a href="#/extldPbanc/PBLN_00${i}">지원사업 공고 제목 ${i}번입니다</a></td></tr>`,
+        )
+        .join("")}
+    </tbody></table></body></html>`;
+    const gen = generateSpec(html, "https://www.sbiz24.kr/");
+    expect(gen).not.toBeNull();
+    expect(gen!.rows).toHaveLength(5);
+    expect(gen!.rows[0].link).toBe(
+      "https://www.sbiz24.kr/#/extldPbanc/PBLN_001",
+    );
+    expect(gen!.rows[0].title).toContain("지원사업 공고 제목 1번");
+  });
 });
 
 describe("fields 메타가 있는 스펙", () => {

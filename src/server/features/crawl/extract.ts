@@ -471,7 +471,11 @@ function pickMainAnchor(el: Element): HTMLAnchorElement | null {
   }
   if (!best || bestLen < 6) return null;
   const href = best.getAttribute("href") ?? "";
-  if (/^(javascript:|#|mailto:)/i.test(href)) return null;
+  // javascript:/mailto:는 무효. 순수 #anchor도 무효.
+  // 단, #/path 형태의 SPA hash 라우팅 링크는 유효한 페이지 이동이므로 허용한다.
+  // (예: sbiz24.kr의 href="#/extldPbanc/PBLN_000000000127349")
+  if (/^(javascript:|mailto:)/i.test(href)) return null;
+  if (/^#$/.test(href) || /^#[a-zA-Z0-9_-]*$/.test(href)) return null;
   return best;
 }
 

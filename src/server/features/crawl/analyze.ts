@@ -353,7 +353,12 @@ export async function analyzeListing(args: {
   // 힌트 문자열이 없으면 헤드리스 브라우저로 렌더링해 한 번 더 시도한다.
   if (!outcome || detection.hintMissed) {
     try {
-      const rendered = await renderPage(page.finalUrl);
+      // page.finalUrl은 fetch 결과(리다이렉트 반영)이지만 hash fragment는
+      // 서버에 전송되지 않아 사라진다. SPA hash 라우팅 사이트(예: sbiz24.kr의
+      // #/combinePbancList)는 hash가 있어야 올바른 페이지가 로드되므로
+      // 원본 URL의 hash를 보존한 채 렌더링한다.
+      const renderUrl = withHashRoute(page.finalUrl, url);
+      const rendered = await renderPage(renderUrl);
       lastHtml = rendered.html;
       steps.push(
         step("브라우저 렌더링", "ok", "렌더링된 DOM으로 다시 분석"),
@@ -595,6 +600,23 @@ function extractTitle(html: string): string | null {
   );
   const raw = (og?.[1] ?? m?.[1] ?? "").trim();
   return raw ? decodeEntities(raw).slice(0, 200) : null;
+}
+
+// fetchPage의 결과 URL(finalUrl)에는 hash fragment가 없다 — 서버에 전송되지
+// 않기 때문이다. SPA hash 라우팅 사이트는 hash로 페이지를 식별하므로, 원본 URL에
+// SPA 라우트 hash(#/... 또는 #!/...)가 있으면 finalUrl에 복원한다.
+// 일반 #anchor는 복원하지 않는다.
+function withHashRoute(finalUrl: string, originalUrl: string): string {
+  try {
+    const orig = new URL(originalUrl);
+    if (!orig.hash) return finalUrl;
+    if (!/^#\//.test(orig.hash) && !/^#!\//.test(orig.hash)) return finalUrl;
+    const final = new URL(finalUrl);
+    final.hash = orig.hash;
+    return final.toString();
+  } catch {
+    return finalUrl;
+  }
 }
 
 function decodeEntities(s: string): string {

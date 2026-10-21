@@ -287,4 +287,33 @@ describe("analyzeListing", () => {
     expect(r.blocked?.code).toBe(errorCodes.URL_UNREACHABLE);
     expect(r.outcome).toBeNull();
   });
+
+  it("SPA hash 라우트 URL은 렌더링 시 hash를 보존한다", async () => {
+    // sbiz24.kr 같은 SPA 사이트는 #/path로 페이지를 식별한다.
+    // fetchPage는 hash를 서버에 보내지 않으므로 finalUrl에 hash가 없다.
+    // renderPage에는 원본 URL의 hash가 복원된 URL이 전달되어야 한다.
+    vi.mocked(fetchPage).mockResolvedValue({
+      ...page(EMPTY_HTML),
+      finalUrl: "https://www.sbiz24.kr/",
+    });
+    vi.mocked(renderPage).mockResolvedValue({
+      finalUrl: "https://www.sbiz24.kr/#/combinePbancList",
+      html: RENDERED_HTML,
+    });
+    vi.mocked(enrichWithLlm).mockResolvedValue(
+      enrichOk(rescueSpec(), makeRows(24)),
+    );
+
+    await analyzeListing({
+      userId: "u1",
+      url: "https://www.sbiz24.kr/#/combinePbancList?combine=combine",
+      sourceId: null,
+      purpose: "analyze-fields",
+    });
+
+    const renderArg = vi.mocked(renderPage).mock.calls[0][0];
+    expect(renderArg).toBe(
+      "https://www.sbiz24.kr/#/combinePbancList?combine=combine",
+    );
+  });
 });

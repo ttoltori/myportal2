@@ -30,6 +30,23 @@ describe("normalizeUrl", () => {
     expect(() => normalizeUrl("ftp://x.com/f")).toThrow(AppError);
     expect(() => normalizeUrl("not a url")).toThrow(AppError);
   });
+
+  it("preserves SPA hash routes (#/path) but strips regular anchors", () => {
+    // SPA hash 라우팅 사이트(예: sbiz24.kr)는 hash로 페이지를 식별한다.
+    // #/path 또는 #!/path 형태는 보존하고, 일반 #anchor는 제거한다.
+    expect(normalizeUrl("https://www.sbiz24.kr/#/combinePbancList?combine=combine")).toBe(
+      "https://www.sbiz24.kr/#/combinePbancList?combine=combine",
+    );
+    expect(normalizeUrl("https://www.sbiz24.kr/#/pbanc")).toBe(
+      "https://www.sbiz24.kr/#/pbanc",
+    );
+    expect(normalizeUrl("https://x.com/#!/page")).toBe(
+      "https://x.com/#!/page",
+    );
+    // 일반 anchor는 제거
+    expect(normalizeUrl("https://x.com/page#section")).toBe("https://x.com/page");
+    expect(normalizeUrl("https://x.com/page#")).toBe("https://x.com/page");
+  });
 });
 
 describe("assertPublicUrl (SSRF)", () => {
@@ -69,6 +86,28 @@ describe("absolutize", () => {
     expect(absolutize("#frag", "https://x.com")).toBeNull();
     expect(absolutize("", "https://x.com")).toBeNull();
     expect(absolutize("mailto:a@b.com", "https://x.com")).toBeNull();
+  });
+
+  it("accepts SPA hash routes (#/path) as valid links", () => {
+    // sbiz24.kr 같은 SPA 사이트는 href="#/extldPbanc/PBLN_123" 형태로
+    // hash 라우팅을 사용한다. 순수 #anchor가 아닌 #/path는 유효한 페이지 이동.
+    expect(absolutize("#/extldPbanc/PBLN_123", "https://www.sbiz24.kr/")).toBe(
+      "https://www.sbiz24.kr/#/extldPbanc/PBLN_123",
+    );
+    expect(absolutize("#/pbanc/456", "https://www.sbiz24.kr/#/list")).toBe(
+      "https://www.sbiz24.kr/#/pbanc/456",
+    );
+  });
+
+  it("rejects bare hash anchors but accepts SPA routes", () => {
+    expect(absolutize("#", "https://x.com")).toBeNull();
+    expect(absolutize("#top", "https://x.com")).toBeNull();
+    expect(absolutize("#section-1", "https://x.com")).toBeNull();
+    // #/ 또는 #!/ 로 시작하면 SPA 라우트
+    expect(absolutize("#/path", "https://x.com")).toBe("https://x.com/#/path");
+    expect(absolutize("#!/path", "https://x.com")).toBe(
+      "https://x.com/#!/path",
+    );
   });
 });
 

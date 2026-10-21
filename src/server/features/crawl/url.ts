@@ -26,7 +26,13 @@ export function normalizeUrl(raw: string): string {
       400,
     );
   }
-  url.hash = "";
+  // 순수 #anchor(같은 페이지 내 이동)는 제거한다.
+  // 단, #/path 또는 #!/path 형태의 SPA hash 라우팅은 페이지 식별 정보이므로
+  // 보존한다 — 제거하면 브라우저 렌더링 시 다른 페이지가 로드된다.
+  // (예: sbiz24.kr의 #/combinePbancList?combine=combine)
+  if (!/^#?\//.test(url.hash) && !/^#!\//.test(url.hash)) {
+    url.hash = "";
+  }
   for (const p of TRACKING_PARAMS) url.searchParams.delete(p);
   url.hostname = url.hostname.toLowerCase();
   if (
@@ -110,7 +116,13 @@ export function assertPublicUrl(raw: string): URL {
 // 해석 불가능한 값은 null을 반환한다 (호출부에서 필터링).
 export function absolutize(href: string, baseUrl: string): string | null {
   const trimmed = href.trim();
-  if (!trimmed || trimmed.startsWith("javascript:") || trimmed.startsWith("#")) {
+  if (!trimmed || trimmed.startsWith("javascript:")) {
+    return null;
+  }
+  // 순수 #anchor(같은 페이지 내 이동)는 무효.
+  // 단, #/path 형태의 SPA hash 라우팅은 유효한 페이지 이동이므로 허용한다.
+  // (예: sbiz24.kr의 href="#/extldPbanc/PBLN_000000000127349")
+  if (/^#$/.test(trimmed) || /^#[a-zA-Z0-9_-]*$/.test(trimmed)) {
     return null;
   }
   try {
