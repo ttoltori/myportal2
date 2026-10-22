@@ -4,11 +4,7 @@
   "crons": [
     {
       "path": "/api/v1/internal/crawl-tick",
-      "schedule": "*/30 * * * *"
-    },
-    {
-      "path": "/api/v1/internal/digest-tick",
-      "schedule": "*/10 * * * *"
+      "schedule": "0 21 * * *"
     }
   ]
 }
