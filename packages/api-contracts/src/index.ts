@@ -178,10 +178,22 @@ export type DeskPayload = z.infer<typeof deskPayloadSchema>;
 
 // ── Auth ────────────────────────────────────────────────
 
+// 이메일 형식을 여기서 강제하지 않는다. 비밀 문구 로그인(AUTH_MASTER_KEY)이
+// 같은 입력칸을 쓰므로 zod가 먼저 막으면 핸들러에 도달하지 못한다.
+// 이메일 형식 검증은 매직링크 경로 안에서 한다.
 export const requestMagicLinkSchema = z.object({
-  email: z.string().email(),
+  email: z.string().trim().min(1).max(320),
 });
 export type RequestMagicLink = z.infer<typeof requestMagicLinkSchema>;
+
+// loggedIn이 true면 세션 쿠키가 이미 설정된 것이다. 화면은 메일 안내 대신
+// 바로 이동해야 한다. devLink는 AUTH_DEV_MODE에서만 내려온다.
+export const magicLinkResultSchema = z.object({
+  sent: z.boolean(),
+  devLink: z.string().optional(),
+  loggedIn: z.boolean().optional(),
+});
+export type MagicLinkResult = z.infer<typeof magicLinkResultSchema>;
 
 export const meSchema = z.object({
   id: z.string(),

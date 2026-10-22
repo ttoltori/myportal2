@@ -20,6 +20,7 @@ import type {
   Me,
   ReanalyzeRequest,
   ReanalyzeResult,
+  MagicLinkResult,
   RequestMagicLink,
   RuleScopeType,
   SourceDetail,
@@ -38,7 +39,7 @@ export function createMyportalClient(config: ApiClientConfig) {
   return {
     auth: {
       requestMagicLink: (body: RequestMagicLink) =>
-        httpRequest<{ sent: boolean; devLink?: string }>(
+        httpRequest<MagicLinkResult>(
           config,
           "POST",
           "/v1/auth/magic-link",

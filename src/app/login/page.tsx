@@ -42,13 +42,20 @@ export default function LoginPage() {
 
   async function submit() {
     const value = email.trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
-      showToast("올바른 이메일 주소를 입력하세요");
+    // 이메일 형식을 여기서 막지 않는다 — 같은 칸으로 로그인 키도 받는다.
+    // 형식 판정은 서버가 하고, 이메일이 아니면 조용히 성공처럼 응답한다.
+    if (!value) {
+      showToast("이메일 또는 로그인 키를 입력하세요");
       return;
     }
     setBusy(true);
     try {
       const res = await api.auth.requestMagicLink({ email: value });
+      // 로그인 키가 맞으면 서버가 이미 세션 쿠키를 설정했다. 바로 들어간다.
+      if (res.loggedIn) {
+        window.location.replace("/");
+        return;
+      }
       setSentAt(formatTimeHM(new Date()));
       setDevLink(res.devLink ?? null);
       setSent(true);
@@ -185,10 +192,10 @@ export default function LoginPage() {
                   className="text-ink-2"
                   style={{ fontSize: 11, letterSpacing: "0.03em" }}
                 >
-                  이메일
+                  이메일 또는 로그인 키
                 </label>
                 <input
-                  type="email"
+                  type="text"
                   className="input-line"
                   placeholder="you@example.com"
                   value={email}

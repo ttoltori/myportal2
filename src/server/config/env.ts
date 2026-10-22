@@ -40,6 +40,12 @@ export const env = {
   sessionTtlDays: int(process.env.SESSION_TTL_DAYS, 30),
 
   internalApiSecret: process.env.INTERNAL_API_SECRET ?? "",
+
+  // 매직링크 없이 바로 로그인시키는 비밀 문구와 그 계정.
+  // 둘 중 하나라도 비면 기능이 꺼진다. 소스에 박지 않는 이유는 git 이력에
+  // 영구히 남아 저장소를 나중에 공개로 돌릴 때 되돌릴 수 없기 때문이다.
+  authMasterKey: (process.env.AUTH_MASTER_KEY ?? "").trim(),
+  authMasterEmail: (process.env.AUTH_MASTER_EMAIL ?? "").trim().toLowerCase(),
   crawlUserAgent,
   // JS 렌더링이 필요한 소스 수집용 헤드리스 브라우저 경로.
   // 비어 있으면 로컬은 시스템 Chrome, 운영(Vercel)은 @sparticuz/chromium을 쓴다.
@@ -70,6 +76,11 @@ export function validateEnv(): void {
 
 export function hasSupabaseAuth(): boolean {
   return Boolean(env.supabaseUrl && env.supabaseServiceRoleKey);
+}
+
+// 비밀 문구 로그인이 설정되었는가. 키와 계정이 모두 있어야 켜진다.
+export function hasMasterKey(): boolean {
+  return Boolean(env.authMasterKey && env.authMasterEmail);
 }
 
 export function hasLlm(): boolean {

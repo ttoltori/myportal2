@@ -1,8 +1,8 @@
-import { createHash, randomBytes } from "crypto";
+import { createHash, randomBytes , timingSafeEqual } from "crypto";
 import type { Context, Next } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { getDb } from "../../config/db";
-import { env, hasSupabaseAuth } from "../../config/env";
+import { env, hasMasterKey, hasSupabaseAuth } from "../../config/env";
 import { authSql } from "./auth.sql";
 import { AppError, errorCodes } from "../../errors/error-codes";
 
@@ -46,7 +46,7 @@ async function createSession(userId: string): Promise<string> {
   return token;
 }
 
-function setSessionCookie(c: Context, token: string): void {
+export function setSessionCookie(c: Context, token: string): void {
   setCookie(c, SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "Lax",
@@ -56,12 +56,42 @@ function setSessionCookie(c: Context, token: string): void {
   });
 }
 
+// ---------- 비밀 문구 로그인 ----------
+
+// 입력이 AUTH_MASTER_KEY와 일치하면 매직링크 없이 바로 세션을 만든다.
+// 길이가 달라도 비교 시간이 새지 않도록 해시 후 timingSafeEqual을 쓴다
+// (internal.routes.ts의 내부 인증과 같은 방식).
+// 키는 어떤 경우에도 로그에 남기지 않는다.
+export function isMasterKey(input: string): boolean {
+  if (!hasMasterKey()) return false;
+  const a = createHash("sha256").update(input).digest();
+  const b = createHash("sha256").update(env.authMasterKey).digest();
+  return timingSafeEqual(a, b);
+}
+
+// 비밀 문구가 맞을 때 호출한다. ALLOWED_EMAILS 검사는 건너뛴다 —
+// 키를 아는 것 자체가 인가다.
+export async function sessionForMasterKey(): Promise<{
+  userId: string;
+  sessionToken: string;
+}> {
+  const userId = await provisionUser(env.authMasterEmail);
+  const sessionToken = await createSession(userId);
+  return { userId, sessionToken };
+}
+
 // ---------- magic link ----------
 
 export async function issueMagicLink(
   email: string,
 ): Promise<{ sent: boolean; devLink?: string }> {
   const normalized = email.trim().toLowerCase();
+  // 계약에서 이메일 형식 검증을 뺐으므로(비밀 문구가 같은 칸을 쓴다) 여기서 본다.
+  // 형식이 아니거나 허용 목록 밖이면 조용히 성공처럼 반환한다 —
+  // 어떤 계정이 등록되어 있는지 노출하지 않기 위함이다.
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalized)) {
+    return { sent: true };
+  }
   if (!isEmailAllowed(normalized)) {
     return { sent: true };
   }
