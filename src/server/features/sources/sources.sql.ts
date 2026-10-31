@@ -7,7 +7,8 @@ export const sourcesSql = {
   findById: `
     select id, url, normalized_url, kind, fetch_strategy, status,
            interval_minutes, fixed_interval, next_crawl_at, last_success_at,
-           consecutive_failures, etag, last_modified, feed_url, page_title, fetch_profile
+           consecutive_failures, consecutive_empty, etag, last_modified, feed_url, page_title,
+           fetch_profile
     from myportal.sources
     where id = $1
   `,
@@ -62,7 +63,8 @@ export const sourcesSql = {
     set status = $2, last_success_at = $3, consecutive_failures = $4,
         next_crawl_at = $5, etag = coalesce($6, etag),
         last_modified = coalesce($7, last_modified),
-        feed_url = coalesce($8, feed_url), interval_minutes = $9
+        feed_url = coalesce($8, feed_url), interval_minutes = $9,
+        consecutive_empty = $10
     where id = $1
   `,
   updateFetchProfile: `
@@ -133,3 +135,18 @@ export const sourcesSql = {
     limit $1
   `,
 };
+
+// 구독 목록류 쿼리가 렌더링 필요 여부를 한 번에 가져오기 위한 조인 조각이다. 소스마다 추가 쿼리를
+// 돌리면 N+1이 되므로 활성 스펙의 최신 버전만 lateral로 붙인다. 프로파일이 비었거나 손상된
+// 소스는 loadFetchProfile이 spec.render로 폴백해야 해서 스펙이 필요하다. `src` 별칭의
+// myportal.sources 뒤에 붙이고, 스펙이 없는 소스(링크 전용 등)도 남도록 left join이다.
+// 상수만 이어 붙이므로 외부 입력은 섞이지 않는다.
+export const activeSpecJoinSql = `
+    left join lateral (
+        select cs.spec
+        from myportal.crawl_specs cs
+        where cs.source_id = src.id and cs.active = true
+        order by cs.version desc
+        limit 1
+    ) active_spec on true
+`;

@@ -337,7 +337,7 @@ describe("repairSpec", () => {
         fetch_profile: { mode: "rendered", settleMs: 2000, measuredAt: MEASURED_AT },
         // LIST_HTML에 없는 셀렉터라 0건 추출이 된다.
         spec: { strategy: "html", itemSelector: "li.nomatch", fields: {} },
-        consecutive_failures: 2,
+        consecutive_empty: 2,
       });
       vi.mocked(robotsAllowed).mockResolvedValue(true);
       vi.mocked(runAnalysis).mockResolvedValue(outcome(null));
@@ -588,8 +588,9 @@ function fakeCollectDb(source: {
   last_modified?: string | null;
   feed_url?: string | null;
   consecutive_failures?: number;
+  consecutive_empty?: number;
 }) {
-  const query = vi.fn(async (sql: string) => {
+  const query = vi.fn(async (sql: string, _params?: unknown[]) => {
     if (sql === sourcesSql.findById) {
       return {
         rows: [
@@ -606,6 +607,7 @@ function fakeCollectDb(source: {
             last_modified: source.last_modified ?? null,
             feed_url: source.feed_url ?? null,
             consecutive_failures: source.consecutive_failures ?? 0,
+            consecutive_empty: source.consecutive_empty ?? 0,
             fetch_profile: source.fetch_profile ?? {},
           },
         ],
@@ -831,6 +833,157 @@ describe("collectSource - 수집 프로파일", () => {
     expect(out.newCount).toBe(5);
     expect(readPage).not.toHaveBeenCalled();
     expect(chatJson).not.toHaveBeenCalled();
+    expect(runAnalysis).not.toHaveBeenCalled();
+  });
+});
+
+// updateAfterRun의 파라미터 위치: [id, status, lastSuccess, failures, nextCrawlAt, etag,
+// lastModified, feedUrl, interval, consecutiveEmpty]
+const AFTER_RUN_FAILURES = 3;
+const AFTER_RUN_EMPTY = 9;
+
+function afterRunParams(db: ReturnType<typeof fakeCollectDb>): unknown[] {
+  const call = db.query.mock.calls.find(([sql]) => sql === sourcesSql.updateAfterRun);
+  if (!call) throw new Error("updateAfterRun이 호출되지 않았다");
+  return call[1] as unknown[];
+}
+
+describe("collectSource - 자가복구 발동 조건 (CRAWL-08)", () => {
+  // LIST_HTML에 없는 셀렉터라 추출 행이 0건이다.
+  const NO_MATCH_SPEC: CrawlSpec = { strategy: "html", itemSelector: "li.nomatch", fields: {} };
+
+  beforeEach(() => {
+    vi.mocked(robotsAllowed).mockResolvedValue(true);
+    vi.mocked(runAnalysis).mockResolvedValue(outcome(null));
+  });
+
+  it("예외 없이 0건 추출이 임계만큼 반복되면 자가복구가 발동한다", async () => {
+    // consecutive_failures는 0이다: 개편으로 0건이 되는 소스는 예외를 던지지 않는다.
+    fakeCollectDb({ spec: NO_MATCH_SPEC, consecutive_failures: 0, consecutive_empty: 2 });
+
+    await collectSource("src-1");
+
+    expect(runAnalysis).toHaveBeenCalled();
+    expect(vi.mocked(runAnalysis).mock.calls[0][0].purpose).toBe("self-repair");
+  });
+
+  it("빈 추출 횟수가 임계에 못 미치면 발동하지 않고 1 증가한다", async () => {
+    const db = fakeCollectDb({ spec: NO_MATCH_SPEC, consecutive_empty: 1 });
+
+    await collectSource("src-1");
+
+    expect(runAnalysis).not.toHaveBeenCalled();
+    expect(afterRunParams(db)[AFTER_RUN_EMPTY]).toBe(2);
+  });
+
+  it("접근 실패 횟수가 높아도 빈 추출이 아니면 발동하지 않는다", async () => {
+    // 두 지표는 의미가 다르다: 예전 코드는 consecutive_failures로 판단했다.
+    fakeCollectDb({ spec: NO_MATCH_SPEC, consecutive_failures: 5, consecutive_empty: 0 });
+
+    await collectSource("src-1");
+
+    expect(runAnalysis).not.toHaveBeenCalled();
+  });
+
+  it("추출은 됐지만 새 항목이 0건이면 발동하지 않고 빈 추출 횟수를 0으로 리셋한다", async () => {
+    // 게시판에 새 글이 없어도 기존 항목은 추출된다 — 정상이다.
+    const db = fakeCollectDb({ spec: ROW_SPEC, consecutive_empty: 5 });
+    const base = db.query.getMockImplementation()!;
+    db.query.mockImplementation(async (sql: string, params?: unknown[]) =>
+      // 모든 항목이 이미 있어 insert가 아무 행도 돌려주지 않는다 (on conflict do nothing).
+      sql === sourcesSql.insertItem ? { rows: [] } : base(sql, params),
+    );
+
+    const out = await collectSource("src-1");
+
+    expect(out.newCount).toBe(0);
+    expect(runAnalysis).not.toHaveBeenCalled();
+    expect(afterRunParams(db)[AFTER_RUN_EMPTY]).toBe(0);
+  });
+
+  it("추출 행이 1건 이상이면 빈 추출 횟수를 0으로 리셋한다", async () => {
+    const db = fakeCollectDb({ spec: ROW_SPEC, consecutive_empty: 1 });
+
+    const out = await collectSource("src-1");
+
+    expect(out.newCount).toBe(5);
+    expect(afterRunParams(db)[AFTER_RUN_EMPTY]).toBe(0);
+  });
+
+  it("예외로 끝난 수집은 consecutive_failures만 올리고 빈 추출 횟수는 유지한다", async () => {
+    const db = fakeCollectDb({ spec: ROW_SPEC, consecutive_failures: 1, consecutive_empty: 3 });
+    vi.mocked(fetchPage).mockRejectedValue(new Error("연결 실패"));
+
+    const out = await collectSource("src-1");
+
+    expect(out.result).toBe("error");
+    const params = afterRunParams(db);
+    expect(params[AFTER_RUN_FAILURES]).toBe(2);
+    expect(params[AFTER_RUN_EMPTY]).toBe(3);
+    expect(runAnalysis).not.toHaveBeenCalled();
+  });
+
+  it("0건이면 접근 실패 횟수는 올리지 않는다", async () => {
+    const db = fakeCollectDb({ spec: NO_MATCH_SPEC, consecutive_failures: 1, consecutive_empty: 0 });
+
+    const out = await collectSource("src-1");
+
+    expect(out.result).toBe("ok");
+    const params = afterRunParams(db);
+    expect(params[AFTER_RUN_FAILURES]).toBe(0);
+    expect(params[AFTER_RUN_EMPTY]).toBe(1);
+  });
+
+  it("복구가 성공해 행을 되찾으면 빈 추출 횟수를 0으로 리셋한다", async () => {
+    const db = fakeCollectDb({ spec: NO_MATCH_SPEC, consecutive_empty: 2 });
+    vi.mocked(runAnalysis).mockResolvedValue(outcome({ strategy: "html", itemSelector: "li.row", fields: {} }));
+
+    const out = await collectSource("src-1");
+
+    expect(out.newCount).toBe(1);
+    expect(afterRunParams(db)[AFTER_RUN_EMPTY]).toBe(0);
+  });
+
+  it("복구가 실패하면 빈 추출 횟수가 계속 올라 다음 수집에서 다시 시도한다", async () => {
+    const db = fakeCollectDb({ spec: NO_MATCH_SPEC, consecutive_empty: 2 });
+
+    await collectSource("src-1");
+
+    expect(runAnalysis).toHaveBeenCalled();
+    expect(afterRunParams(db)[AFTER_RUN_EMPTY]).toBe(3);
+  });
+
+  it("레거시 fetch_strategy='rendered' 행도 자가복구 대상이다", async () => {
+    fakeCollectDb({
+      fetch_strategy: "rendered",
+      fetch_profile: { mode: "rendered", settleMs: 2000, measuredAt: MEASURED_AT },
+      spec: NO_MATCH_SPEC,
+      consecutive_empty: 2,
+    });
+
+    await collectSource("src-1");
+
+    expect(runAnalysis).toHaveBeenCalled();
+  });
+
+  it("스펙으로 추출하지 않는 전략(rss)은 빈 추출이 반복돼도 자가복구하지 않는다", async () => {
+    fakeCollectDb({
+      fetch_strategy: "rss",
+      fetch_profile: { mode: "feed", measuredAt: MEASURED_AT },
+      spec: { strategy: "rss" },
+      consecutive_empty: 9,
+    });
+    vi.mocked(fetchPage).mockResolvedValue({
+      body: "not a feed",
+      finalUrl: PAGE_URL,
+      contentType: "text/html",
+      etag: null,
+      lastModified: null,
+      status: 200,
+    } as never);
+
+    await collectSource("src-1");
+
     expect(runAnalysis).not.toHaveBeenCalled();
   });
 });

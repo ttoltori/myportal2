@@ -27,7 +27,12 @@ const BASELINE_SIZE = 20;
 const MIN_INTERVAL = 15;
 const MAX_INTERVAL = 24 * 60;
 const MANUAL_COLLECT_COOLDOWN_MIN = 5;
+// 연속으로 추출 행이 0건이었던 횟수(sources.consecutive_empty)의 임계. consecutive_failures와
+// 비교하면 안 된다 — 그쪽은 예외로 끝난 수집만 세므로 "개편으로 0건"에서는 영원히 오르지 않는다.
 const EMPTY_RUNS_BEFORE_REPAIR = 2;
+// 스펙(DOM 셀렉터)으로 추출하는 전략. rendered는 새 설계에서 fetch_strategy 값으로 쓰지 않지만
+// 기존 DB 행에 남아 있고 extractRows가 html과 같게 처리하므로 자가복구 대상도 같아야 한다.
+const SPEC_REPAIRABLE_STRATEGIES: readonly string[] = ["html", "rendered"];
 
 export interface CollectResult {
   runId: string;
@@ -276,6 +281,7 @@ export async function collectSource(
         last_modified: string | null;
         feed_url: string | null;
         consecutive_failures: number;
+        consecutive_empty: number;
         fetch_profile: unknown;
       }
     | undefined;
@@ -321,6 +327,7 @@ export async function collectSource(
       null,
       null,
       source.interval_minutes,
+      source.consecutive_empty,
     ]);
     throw new AppError(
       errorCodes.ROBOTS_DISALLOWED,
@@ -338,6 +345,8 @@ export async function collectSource(
   let lastSuccess: string | null = new Date().toISOString().slice(0, 19).replace("T", " ");
   let etag: string | null = null;
   let lastModified: string | null = null;
+  // 수집을 끝까지 하지 못한 경로(예외, 304)는 추출 결과를 모르므로 기존 값을 유지한다.
+  let consecutiveEmpty = source.consecutive_empty;
 
   try {
     const { rows: specRows } = await db.query<{
@@ -402,8 +411,8 @@ export async function collectSource(
       // self-repair: 반복된 0건 추출이면 스펙을 재생성해 본다.
       if (
         extracted.length === 0 &&
-        source.fetch_strategy === "html" &&
-        source.consecutive_failures >= EMPTY_RUNS_BEFORE_REPAIR
+        SPEC_REPAIRABLE_STRATEGIES.includes(source.fetch_strategy) &&
+        source.consecutive_empty >= EMPTY_RUNS_BEFORE_REPAIR
       ) {
         const repaired = await repairSpec(
           sourceId,
@@ -415,6 +424,10 @@ export async function collectSource(
         if (repaired) extracted = repaired.rows;
       }
 
+      // 기준은 추출 행 수다. 새 항목 수(newIds)로 세면 새 글이 없는 정상 게시판이
+      // 빈 추출로 오인되어 멀쩡한 스펙을 갈아치운다.
+      consecutiveEmpty = extracted.length === 0 ? source.consecutive_empty + 1 : 0;
+
       newIds = await persistItems(sourceId, extracted, false);
       if (newIds.length > 0) {
         await matchNewItemsForSubscribers(sourceId, newIds);
@@ -424,6 +437,9 @@ export async function collectSource(
   } catch (err) {
     result = "error";
     failures = source.consecutive_failures + 1;
+    // 추출 뒤 저장 단계에서 던진 경우도 이번 실행은 실패이므로 빈 추출 횟수는 건드리지 않는다.
+    // (접근 실패와 추출 실패는 다른 지표다.)
+    consecutiveEmpty = source.consecutive_empty;
     newStatus = failures >= 3 ? "fail" : "warn";
     lastSuccess = null;
     runError = {
@@ -447,6 +463,7 @@ export async function collectSource(
     lastModified,
     null,
     interval,
+    consecutiveEmpty,
   ]);
 
   const durationMs = Date.now() - started;
