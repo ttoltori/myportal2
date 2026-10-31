@@ -11,6 +11,11 @@ export const reanalyzeSql = {
     where source_id = $1
   `,
   // 새 스펙이 유효하므로 연속 실패 카운트는 항상 0으로 되돌린다.
+  //
+  // consecutive_empty도 함께 0으로 되돌려야 한다. 사용자가 방금 스펙을 명시적으로 고쳐
+  // 적용했으므로 이전 스펙이 쌓은 빈 추출 이력은 무효다. 남겨 두면 카운터가 이미 임계치
+  // (EMPTY_RUNS_BEFORE_REPAIR) 이상이라, 새 스펙의 다음 수집이 한 번만 0건이어도 자가복구가
+  // 즉시 발동해 사용자가 손으로 고친 스펙을 자동 생성 스펙으로 덮어쓴다.
   // status는 일시정지(pause)를 풀지 않도록 호출부가 계산해 $3으로 넘긴다.
   //
   // feed_url($4)도 함께 갱신해야 한다. 수집 경로(collector.extractRows)의 rss
@@ -19,7 +24,7 @@ export const reanalyzeSql = {
   // 기존 값을 null로 지우지 않도록 coalesce를 쓴다(sourcesSql.updateAfterRun과 동일 관례).
   updateSourceAfterApply: `
     update myportal.sources
-    set fetch_strategy = $2, status = $3, consecutive_failures = 0,
+    set fetch_strategy = $2, status = $3, consecutive_failures = 0, consecutive_empty = 0,
         feed_url = coalesce($4, feed_url)
     where id = $1
   `,

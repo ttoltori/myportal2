@@ -607,6 +607,15 @@ describe("applySpecForSource", () => {
     expect(reanalyzeSql.updateSourceAfterApply).toMatch(/consecutive_failures\s*=\s*0/);
   });
 
+  it("스펙을 적용하면 consecutive_empty도 0으로 되돌려 자가복구가 새 스펙을 덮어쓰지 않게 한다", async () => {
+    await applySpecForSource(USER, SOURCE, applyInput());
+    const [call] = txCallsOf(reanalyzeSql.updateSourceAfterApply);
+    expect(call).toBeDefined();
+    // 리셋 값은 파라미터가 아니라 SQL 상수가 고정한다. 파라미터는 id, strategy, status, feed_url뿐이다.
+    expect(call?.[1]).toHaveLength(4);
+    expect(reanalyzeSql.updateSourceAfterApply).toMatch(/consecutive_empty\s*=\s*0/);
+  });
+
   it("paused 소스는 status를 ok로 덮지 않는다", async () => {
     setupDb({ status: "pause" });
     await applySpecForSource(USER, SOURCE, applyInput());
