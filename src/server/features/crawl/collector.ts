@@ -18,8 +18,9 @@ import { matchNewItemsForSubscribers } from "../keywords/match";
 import { clusterItems } from "./cluster";
 import { dedupeHash, normalizeUrl, safeNormalize } from "./url";
 import { sourcesSql } from "../sources/sources.sql";
-import { saveFetchProfile } from "../sources/sources";
+import { loadFetchProfile, saveFetchProfile } from "../sources/sources";
 import { fetchProfileSchema, type FetchProfile } from "./analyze/profile";
+import type { RenderOptions } from "./render";
 
 const BASELINE_SIZE = 20;
 const MIN_INTERVAL = 15;
@@ -75,6 +76,9 @@ export async function extractRows(
     case "structured":
       return parseJsonLdList(html, finalUrl) ?? [];
     case "html":
+    // 기존 DB 행에 남아 있는 전략값. 새 설계에서는 html + profile.mode="rendered"로
+    // 표현하므로 추출 방식은 html과 같다.
+    case "rendered":
       return spec ? applySpec(html, spec, finalUrl) : [];
     case "link":
       return [];
@@ -165,6 +169,44 @@ async function persistItems(
   return insertedIds;
 }
 
+// ── fetch profile → render options ─────────────────────
+
+// 프로파일에 값이 있는 항목만 넘긴다. 없는 항목은 renderPage 기본값을 쓰게 둔다.
+function renderOptionsFrom(profile: FetchProfile): RenderOptions {
+  const opts: RenderOptions = {};
+  if (profile.waitForSelector) opts.waitForSelector = profile.waitForSelector;
+  if (profile.settleMs !== undefined) opts.settleMs = profile.settleMs;
+  if (profile.scrollToBottom) opts.scrollToBottom = true;
+  return opts;
+}
+
+// loadFetchProfile은 손상된 값을 조용히 레거시 폴백으로 바꾼다. 그런데 spec.render가
+// 없는 소스는 폴백이 정적 수집이라, 렌더링이 필요한 소스가 아무 흔적 없이 0건이 된다.
+// 그래서 폴백이 쓰였음을 로그로 남긴다. 마이그레이션 직후의 빈 값('{}')은 정상적인
+// 레거시 상태라 매 수집마다 로그를 채우지 않도록 제외한다.
+// 원본 값은 싣지 않고 소스 id와 실제 적용된 모드만 남긴다.
+function warnIfProfileCorrupted(
+  source: { id: string; fetch_profile: unknown },
+  used: FetchProfile,
+): void {
+  let raw = source.fetch_profile;
+  if (raw == null) return;
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      raw = undefined;
+    }
+  }
+  const isEmptyObject =
+    typeof raw === "object" && raw !== null && Object.keys(raw).length === 0;
+  if (isEmptyObject) return;
+  if (raw !== undefined && fetchProfileSchema.safeParse(raw).success) return;
+  console.error(
+    `[collect] 저장된 수집 프로파일이 손상되어 레거시 폴백 사용: source=${source.id} mode=${used.mode}`,
+  );
+}
+
 // ── main collect ───────────────────────────────────────
 
 export async function collectSource(
@@ -190,6 +232,7 @@ export async function collectSource(
         last_modified: string | null;
         feed_url: string | null;
         consecutive_failures: number;
+        fetch_profile: unknown;
       }
     | undefined;
   if (!source) {
@@ -264,17 +307,23 @@ export async function collectSource(
           : specRows[0].spec) as CrawlSpec
       : null;
 
-    // JS 렌더링 소스는 일반 fetch 대신 헤드리스 브라우저로 DOM을 가져온다.
-    // 렌더링된 DOM에는 ETag/304 조건부 요청을 적용할 수 없다.
+    // 어떻게 가져올지는 스펙이 아니라 수집 프로파일이 정한다. 저장된 값이 비었거나
+    // 손상되면 loadFetchProfile이 spec.render로 유도한 레거시 폴백을 돌려준다.
+    const profile = loadFetchProfile(source, spec);
+    warnIfProfileCorrupted(source, profile);
+
     let body = "";
     let contentType = "";
     let finalUrl = source.url;
-    if (spec?.render) {
-      const rendered = await renderPage(source.url);
+    if (profile.mode === "rendered") {
+      // 측정한 대기 설정으로 렌더링한다. 렌더링된 DOM에는 ETag/304 조건부 요청을
+      // 적용할 수 없다(실행 후의 DOM이라 서버의 ETag와 대응하지 않는다).
+      const rendered = await renderPage(source.url, renderOptionsFrom(profile));
       body = rendered.html;
       contentType = "text/html";
       finalUrl = rendered.finalUrl;
     } else {
+      // static, feed는 원본 응답을 그대로 쓰므로 조건부 요청이 유효하다.
       const page = await fetchPage(source.url, {
         etag: source.etag,
         lastModified: source.last_modified,

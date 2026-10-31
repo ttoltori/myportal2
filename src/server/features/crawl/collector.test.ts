@@ -2,10 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb } from "../../config/db";
 import { AppError, errorCodes } from "../../errors/error-codes";
 import { sourcesSql } from "../sources/sources.sql";
-import { createSourceWithBaseline, repairSpec } from "./collector";
+import { collectSource, createSourceWithBaseline, repairSpec } from "./collector";
 import { enrichWithLlm, type EnrichResult } from "./llm/enrich";
 import { fetchPage } from "./fetcher";
 import { renderPage } from "./render";
+import { robotsAllowed } from "./robots";
+import { readPage } from "./analyze/llm-read";
+import { chatJson } from "./llm/llm-client";
 import type { CrawlSpec, ExtractedRow } from "./extract";
 
 vi.mock("../../config/db", () => ({ getDb: vi.fn() }));
@@ -15,6 +18,9 @@ vi.mock("./robots", () => ({ robotsAllowed: vi.fn() }));
 vi.mock("./cluster", () => ({ clusterItems: vi.fn() }));
 vi.mock("../keywords/match", () => ({ matchNewItemsForSubscribers: vi.fn() }));
 vi.mock("./llm/enrich", () => ({ enrichWithLlm: vi.fn() }));
+// CRAWL-03: 정기 수집 경로는 LLM을 호출하면 안 된다. 호출 여부를 확인하려고 모킹한다.
+vi.mock("./analyze/llm-read", () => ({ readPage: vi.fn(), readPageRepair: vi.fn() }));
+vi.mock("./llm/llm-client", () => ({ chatJson: vi.fn() }));
 
 // 휴리스틱(generateSpec)이 실제로 목록을 찾을 수 있는 최소 HTML.
 const LIST_HTML = `<html><body><ul>${[1, 2, 3, 4, 5]
@@ -295,5 +301,252 @@ describe("createSourceWithBaseline - 수집 프로파일", () => {
     expect(out.reusedExisting).toBe(true);
     expect(out.sourceId).toBe("src-existing");
     expect(db.profileWrites).toHaveLength(0);
+  });
+});
+
+
+// ── collectSource: 수집 프로파일로 가져오기 ────────────────
+// fetch_profile이 어떻게 가져올지(모드·대기 설정)를 정한다.
+
+const ROW_SPEC: CrawlSpec = { strategy: "html", itemSelector: "li.row" };
+const MEASURED_AT = "2026-10-31T00:00:00.000Z";
+
+function fakeCollectDb(source: {
+  fetch_strategy?: string;
+  fetch_profile?: unknown;
+  spec?: CrawlSpec | null;
+  etag?: string | null;
+  last_modified?: string | null;
+  feed_url?: string | null;
+}) {
+  const query = vi.fn(async (sql: string) => {
+    if (sql === sourcesSql.findById) {
+      return {
+        rows: [
+          {
+            id: "src-1",
+            url: PAGE_URL,
+            normalized_url: PAGE_URL,
+            kind: "list",
+            fetch_strategy: source.fetch_strategy ?? "html",
+            status: "ok",
+            interval_minutes: 60,
+            fixed_interval: false,
+            etag: source.etag ?? null,
+            last_modified: source.last_modified ?? null,
+            feed_url: source.feed_url ?? null,
+            consecutive_failures: 0,
+            fetch_profile: source.fetch_profile ?? {},
+          },
+        ],
+      };
+    }
+    if (sql === sourcesSql.latestActiveSpec) {
+      const spec = source.spec === undefined ? ROW_SPEC : source.spec;
+      return { rows: spec ? [{ version: 1, spec }] : [] };
+    }
+    if (sql === sourcesSql.insertRun) return { rows: [{ id: "run-1" }] };
+    if (sql === sourcesSql.insertItem) return { rows: [{ id: "item-1" }] };
+    return { rows: [] };
+  });
+  const db = { query, transaction: vi.fn() };
+  vi.mocked(getDb).mockReturnValue(db as never);
+  return db;
+}
+
+describe("collectSource - 수집 프로파일", () => {
+  beforeEach(() => {
+    vi.mocked(robotsAllowed).mockResolvedValue(true);
+  });
+
+  it("mode=rendered면 프로파일의 waitForSelector와 settleMs로 렌더링한다", async () => {
+    fakeCollectDb({
+      fetch_profile: {
+        mode: "rendered",
+        waitForSelector: "li.row",
+        settleMs: 3000,
+        measuredAt: MEASURED_AT,
+      },
+    });
+
+    const out = await collectSource("src-1");
+
+    expect(out.result).toBe("ok");
+    expect(renderPage).toHaveBeenCalledTimes(1);
+    expect(renderPage).toHaveBeenCalledWith(PAGE_URL, {
+      waitForSelector: "li.row",
+      settleMs: 3000,
+    });
+    expect(fetchPage).not.toHaveBeenCalled();
+  });
+
+  it("mode=static이면 ETag 조건부 요청으로 fetch한다", async () => {
+    fakeCollectDb({
+      fetch_profile: { mode: "static", measuredAt: MEASURED_AT },
+      etag: '"abc"',
+      last_modified: "Sat, 31 Oct 2026 00:00:00 GMT",
+    });
+
+    await collectSource("src-1");
+
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(fetchPage).toHaveBeenCalledWith(PAGE_URL, {
+      etag: '"abc"',
+      lastModified: "Sat, 31 Oct 2026 00:00:00 GMT",
+    });
+  });
+
+  it("static에서 304가 오면 unchanged로 끝낸다", async () => {
+    fakeCollectDb({ fetch_profile: { mode: "static", measuredAt: MEASURED_AT } });
+    vi.mocked(fetchPage).mockResolvedValue({
+      body: "",
+      finalUrl: PAGE_URL,
+      contentType: "",
+      etag: '"abc"',
+      lastModified: null,
+      status: 304,
+    } as never);
+
+    const out = await collectSource("src-1");
+
+    expect(out.result).toBe("unchanged");
+  });
+
+  it("렌더링 소스는 ETag를 보내지 않는다", async () => {
+    fakeCollectDb({
+      fetch_profile: { mode: "rendered", settleMs: 2000, measuredAt: MEASURED_AT },
+      etag: '"abc"',
+    });
+
+    await collectSource("src-1");
+
+    expect(fetchPage).not.toHaveBeenCalled();
+    expect(renderPage).toHaveBeenCalledWith(PAGE_URL, { settleMs: 2000 });
+  });
+
+  it("프로파일이 비어 있고 spec.render가 true면 렌더링한다", async () => {
+    // 마이그레이션 직후 기존 소스: fetch_profile = '{}'
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    fakeCollectDb({ fetch_profile: {}, spec: { ...ROW_SPEC, render: true } });
+
+    await collectSource("src-1");
+
+    // 측정값이 없으므로 대기 옵션 없이 renderPage 기본값을 쓴다.
+    expect(renderPage).toHaveBeenCalledWith(PAGE_URL, {});
+    expect(fetchPage).not.toHaveBeenCalled();
+    // 빈 값은 정상적인 레거시 상태라 경고 로그를 남기지 않는다.
+    expect(errSpy).not.toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it("프로파일이 비어 있고 spec.render가 없으면 정적으로 fetch한다", async () => {
+    fakeCollectDb({ fetch_profile: {} });
+
+    await collectSource("src-1");
+
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("프로파일이 손상되면 spec.render로 폴백하고 원본 값 없이 로그를 남긴다", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    // settleMs 0은 Playwright에서 무제한 대기라 스키마가 막아야 하는 값이다.
+    fakeCollectDb({
+      fetch_profile: { mode: "rendered", settleMs: 0, secret: "LEAK-ME" },
+      spec: { ...ROW_SPEC, render: true },
+    });
+
+    await collectSource("src-1");
+
+    // 검증을 우회한 settleMs: 0이 renderPage에 넘어가면 안 된다.
+    expect(renderPage).toHaveBeenCalledWith(PAGE_URL, {});
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    const logged = String(errSpy.mock.calls[0][0]);
+    expect(logged).toContain("[collect]");
+    expect(logged).toContain("src-1");
+    expect(logged).not.toContain("LEAK-ME");
+    errSpy.mockRestore();
+  });
+
+  it("프로파일이 손상되고 spec.render도 없으면 정적 폴백을 로그로 드러낸다", async () => {
+    // 렌더링이 필요한 소스가 흔적 없이 정적 수집으로 내려가는 바로 그 사고.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    fakeCollectDb({ fetch_profile: "not-json{" });
+
+    await collectSource("src-1");
+
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    errSpy.mockRestore();
+  });
+
+  it("fetch_strategy가 rendered인 기존 소스를 html과 같이 처리한다", async () => {
+    const db = fakeCollectDb({
+      fetch_strategy: "rendered",
+      fetch_profile: { mode: "rendered", settleMs: 2000, measuredAt: MEASURED_AT },
+    });
+
+    const out = await collectSource("src-1");
+
+    expect(out.newCount).toBe(5);
+    const inserts = db.query.mock.calls.filter(([sql]) => sql === sourcesSql.insertItem);
+    expect(inserts).toHaveLength(5);
+  });
+
+  it("mode=feed면 렌더링 없이 피드를 fetch한다", async () => {
+    fakeCollectDb({
+      fetch_strategy: "rss",
+      fetch_profile: { mode: "feed", measuredAt: MEASURED_AT },
+      spec: { strategy: "rss" },
+    });
+    vi.mocked(fetchPage).mockResolvedValue({
+      body: `<?xml version="1.0"?><rss version="2.0"><channel><title>t</title>
+        <item><title>피드 항목</title><link>https://x.kr/f/1</link></item></channel></rss>`,
+      finalUrl: PAGE_URL,
+      contentType: "application/rss+xml",
+      etag: null,
+      lastModified: null,
+      status: 200,
+    } as never);
+
+    const out = await collectSource("src-1");
+
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+    expect(out.newCount).toBe(1);
+  });
+
+  it("scrollToBottom이 저장되어 있으면 렌더 옵션으로 넘긴다", async () => {
+    fakeCollectDb({
+      fetch_profile: {
+        mode: "rendered",
+        waitForSelector: "li.row",
+        settleMs: 4000,
+        scrollToBottom: true,
+        measuredAt: MEASURED_AT,
+      },
+    });
+
+    await collectSource("src-1");
+
+    expect(renderPage).toHaveBeenCalledWith(PAGE_URL, {
+      waitForSelector: "li.row",
+      settleMs: 4000,
+      scrollToBottom: true,
+    });
+  });
+
+  it("정기 수집 경로에서 LLM을 호출하지 않는다", async () => {
+    // CRAWL-03: 추출이 성공하는 일반 수집에서 readPage/chatJson/enrich가 모두 불리지 않는다.
+    fakeCollectDb({
+      fetch_profile: { mode: "rendered", settleMs: 2000, measuredAt: MEASURED_AT },
+    });
+
+    await collectSource("src-1");
+
+    expect(readPage).not.toHaveBeenCalled();
+    expect(chatJson).not.toHaveBeenCalled();
+    expect(enrichWithLlm).not.toHaveBeenCalled();
   });
 });
