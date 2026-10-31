@@ -7,7 +7,7 @@ export const sourcesSql = {
   findById: `
     select id, url, normalized_url, kind, fetch_strategy, status,
            interval_minutes, fixed_interval, next_crawl_at, last_success_at,
-           consecutive_failures, etag, last_modified, feed_url, page_title
+           consecutive_failures, etag, last_modified, feed_url, page_title, fetch_profile
     from myportal.sources
     where id = $1
   `,
@@ -64,6 +64,9 @@ export const sourcesSql = {
         last_modified = coalesce($7, last_modified),
         feed_url = coalesce($8, feed_url), interval_minutes = $9
     where id = $1
+  `,
+  updateFetchProfile: `
+    update myportal.sources set fetch_profile = $2::jsonb where id = $1
   `,
   subscriptionForSource: `
     select id, user_id, display_name, category_id, paused

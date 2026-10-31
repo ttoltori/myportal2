@@ -1,9 +1,16 @@
 import type { SourceDetail, Subscription } from "@myportal/api-contracts";
+import type { DatabaseClient } from "@ttoltori/database";
 import { getDb } from "../../config/db";
 import { AppError, errorCodes } from "../../errors/error-codes";
 import { mapItem, type ItemRow } from "../desk/desk";
 import { deskSql } from "../desk/desk.sql";
 import { collectSource } from "../crawl/collector";
+import {
+  fetchProfileSchema,
+  profileFromLegacySpec,
+  type FetchProfile,
+} from "../crawl/analyze/profile";
+import type { CrawlSpec } from "../crawl/extract";
 import { sourcesSql } from "./sources.sql";
 
 interface SubRow {
@@ -174,4 +181,35 @@ export async function collectNow(
   await findSubscribedSource(userId, sourceId);
   const res = await collectSource(sourceId, { manual: true, userId });
   return { newCount: res.newCount, runId: res.runId };
+}
+
+// 수집 프로파일은 스펙과 수명이 달라 sources.fetch_profile에 따로 둔다.
+// 분석 트랜잭션 안에서 스펙 저장과 함께 커밋되도록 tx를 받을 수 있다.
+export async function saveFetchProfile(
+  sourceId: string,
+  profile: FetchProfile,
+  tx?: DatabaseClient,
+): Promise<void> {
+  const db = tx ?? getDb();
+  await db.query(sourcesSql.updateFetchProfile, [sourceId, JSON.stringify(profile)]);
+}
+
+// 저장된 값이 비었거나(마이그레이션 직후 '{}') 스키마에 맞지 않으면 예외 대신
+// 레거시 폴백을 쓴다. 손으로 넣은 값이나 구버전 형태가 수집 전체를 깨뜨리면 안 되고,
+// 폴백은 spec.render를 따르므로 기존 동작이 유지된다.
+export function loadFetchProfile(
+  row: { fetch_profile: unknown },
+  spec: CrawlSpec | null,
+): FetchProfile {
+  // pg는 jsonb를 이미 파싱된 객체로 반환하므로 문자열일 때만 JSON.parse한다.
+  let raw = row.fetch_profile;
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return profileFromLegacySpec(spec);
+    }
+  }
+  const parsed = fetchProfileSchema.safeParse(raw);
+  return parsed.success ? parsed.data : profileFromLegacySpec(spec);
 }
