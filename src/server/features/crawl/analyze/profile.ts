@@ -10,14 +10,15 @@ export const fetchProfileSchema = z.object({
   // 로딩 완료 판정 셀렉터. 보통 itemSelector.
   waitForSelector: z.string().optional(),
   // 시간 기반 대기 상한(ms). 측정값 × 여유계수에 하한·상한을 적용한 값.
-  settleMs: z.number().optional(),
+  // Playwright에서 timeout 0은 무제한 대기라, 손상된 jsonb가 수집을 멈추지 않게 양수만 허용한다.
+  settleMs: z.number().positive().optional(),
   scrollToBottom: z.boolean().optional(),
   // 측정 근거 — 운영 추적과 재측정 판단에 쓴다.
-  measuredReadyMs: z.number().optional(),
+  measuredReadyMs: z.number().nonnegative().optional(),
   measuredReadyBy: z
     .enum(["selector", "networkidle", "stabilized", "timeout"])
     .optional(),
-  measuredAt: z.string(),
+  measuredAt: z.string().datetime(),
 });
 
 export type FetchProfile = z.infer<typeof fetchProfileSchema>;

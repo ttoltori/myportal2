@@ -50,6 +50,17 @@ describe("settleBudget", () => {
     expect(settleBudget(timings({ readyMs: 30000 }))).toBe(20000);
   });
 
+  it("하한·상한 경계 직전과 직후를 구분한다", () => {
+    // 1.5배가 정확히 1500이 되는 1000, 직전(999 -> 1499 -> 1500), 직후(1001 -> 1502)
+    expect(settleBudget(timings({ readyMs: 999 }))).toBe(1500);
+    expect(settleBudget(timings({ readyMs: 1000 }))).toBe(1500);
+    expect(settleBudget(timings({ readyMs: 1001 }))).toBe(1502);
+    // 1.5배가 정확히 20000이 되는 값 13334 근처
+    expect(settleBudget(timings({ readyMs: 13332 }))).toBe(19998);
+    expect(settleBudget(timings({ readyMs: 13334 }))).toBe(20000);
+    expect(settleBudget(timings({ readyMs: 13400 }))).toBe(20000);
+  });
+
   it("readyBy가 timeout이면 측정값을 믿지 않고 상한을 쓴다", () => {
     expect(settleBudget(timings({ readyMs: 500, readyBy: "timeout" }))).toBe(
       20000,
@@ -97,6 +108,18 @@ describe("buildFetchProfile", () => {
     expect(p.scrollToBottom).toBe(true);
   });
 
+  it("grewByScroll이 아니면 scrollToBottom 키가 없다", () => {
+    const p = build({ staticHtml: listHtml(0) });
+    expect("scrollToBottom" in p).toBe(false);
+  });
+
+  it("mode=static이면 waitForSelector와 settleMs를 담지 않는다", () => {
+    const p = build();
+    expect(p.mode).toBe("static");
+    expect("waitForSelector" in p).toBe(false);
+    expect("settleMs" in p).toBe(false);
+  });
+
   it("measuredAt을 ISO 8601로 기록한다", () => {
     const p = build();
     expect(new Date(p.measuredAt).toISOString()).toBe(p.measuredAt);
@@ -138,6 +161,42 @@ describe("fetchProfileSchema", () => {
       mode: "static",
       measuredAt: "2026-10-31T00:00:00.000Z",
     });
+  });
+
+  it("settleMs가 0 이하이면 거부한다 — Playwright에서 0은 무제한 대기", () => {
+    const base = { mode: "rendered", measuredAt: "2026-10-31T00:00:00.000Z" };
+    expect(fetchProfileSchema.safeParse({ ...base, settleMs: 0 }).success).toBe(
+      false,
+    );
+    expect(
+      fetchProfileSchema.safeParse({ ...base, settleMs: -1 }).success,
+    ).toBe(false);
+    expect(
+      fetchProfileSchema.safeParse({ ...base, settleMs: 1500 }).success,
+    ).toBe(true);
+  });
+
+  it("measuredReadyMs가 음수이면 거부하고 0은 허용한다", () => {
+    const base = { mode: "static", measuredAt: "2026-10-31T00:00:00.000Z" };
+    expect(
+      fetchProfileSchema.safeParse({ ...base, measuredReadyMs: -1 }).success,
+    ).toBe(false);
+    expect(
+      fetchProfileSchema.safeParse({ ...base, measuredReadyMs: 0 }).success,
+    ).toBe(true);
+  });
+
+  it("measuredAt이 ISO 8601이 아니면 거부한다", () => {
+    expect(
+      fetchProfileSchema.safeParse({ mode: "static", measuredAt: "어제" })
+        .success,
+    ).toBe(false);
+  });
+
+  it("레거시 폴백의 measuredAt(에포크)은 스키마를 통과한다", () => {
+    expect(fetchProfileSchema.safeParse(profileFromLegacySpec(null)).success).toBe(
+      true,
+    );
   });
 
   it("빈 객체는 거부한다 — 호출자가 legacy 경로로 분기하는 기준", () => {

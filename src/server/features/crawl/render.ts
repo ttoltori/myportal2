@@ -103,8 +103,16 @@ export async function renderPage(
   opts: RenderOptions = {},
 ): Promise<RenderedPage> {
   assertPublicUrl(rawUrl);
-  const settleMs = opts.settleMs ?? SETTLE_TIMEOUT_MS;
-  const stabilizeMs = opts.settleMs ?? MAX_STABILIZE_MS;
+  // Playwright의 timeout 0은 "무제한 대기"라, 손상된 프로파일 값(0·음수·NaN)이
+  // 스키마를 우회해 들어와도 수집이 영구히 멈추지 않도록 여기서도 걸러낸다.
+  const override =
+    opts.settleMs !== undefined &&
+    Number.isFinite(opts.settleMs) &&
+    opts.settleMs > 0
+      ? opts.settleMs
+      : undefined;
+  const settleMs = override ?? SETTLE_TIMEOUT_MS;
+  const stabilizeMs = override ?? MAX_STABILIZE_MS;
   const browser = await launchBrowser();
   try {
     const context = await browser.newContext({
@@ -123,9 +131,15 @@ export async function renderPage(
       });
       // 셀렉터가 잡히면 이후의 고정 대기(SPA 지연·안정화 폴링)가 모두 불필요하다.
       // 못 잡으면 셀렉터가 틀렸거나 페이지가 바뀐 것이므로 시간 기반 판정으로 되돌아간다.
+      // state를 attached로 두는 이유: 기본값 visible은 접힌 영역·비활성 탭 안의 목록을
+      // 영영 못 잡아 매 수집마다 settleMs를 허비하는데, 추출(applySpec)은 가시성과
+      // 무관하게 DOM 행을 세므로 "DOM에 붙었는가"가 추출 기준과 일치한다.
       const selectorHit = opts.waitForSelector
         ? await page
-            .waitForSelector(opts.waitForSelector, { timeout: settleMs })
+            .waitForSelector(opts.waitForSelector, {
+              state: "attached",
+              timeout: settleMs,
+            })
             .then(() => true)
             .catch(() => false)
         : false;
