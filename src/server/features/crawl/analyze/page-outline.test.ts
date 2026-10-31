@@ -1,4 +1,6 @@
+import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
+import { stripNoise } from "../extract";
 import { hintMatchesOutline } from "./llm-read";
 import {
   buildPageOutline,
@@ -114,13 +116,44 @@ describe("buildPageOutline", () => {
     }
   });
 
-  it("svg 안의 텍스트에는 번호를 붙이지 않는다", () => {
-    const { text } = buildPageOutline(
-      page("<div><svg><title>아이콘 제목</title></svg><p>본문</p></div>"),
+  it("svg는 지우지 않는다: 텍스트가 없는 svg는 줄을 만들지 않고, 있으면 실제 DOM의 노드로 번호를 받는다", () => {
+    const { text, refs } = buildPageOutline(
+      page("<div><svg><path d='M0 0'/></svg><p>본문</p><svg><text>아이콘 글자</text></svg></div>"),
     );
+    const lines = numberedLines(text);
 
-    expect(text).not.toContain("아이콘 제목");
-    expect(text).toContain('"본문"');
+    expect(lines[0]).toContain('"본문"');
+    expect(lines[1]).toContain('"아이콘 글자"');
+    expect(refs[2]?.tagName.toLowerCase()).toBe("text");
+  });
+
+  // 불변식: 개요의 ref 공간은 applySpec이 보는 DOM(parseHTML + stripNoise)과 같아야 한다.
+  // 개요가 요소를 더 지우면 nth-child 경로가 두 문서에서 다른 요소를 가리킨다.
+  it("개요 문서는 stripNoise만 적용한 문서와 같은 요소 구조를 갖는다", () => {
+    const html = page(`
+      <nav><a href="/m">메뉴</a></nav>
+      <div id="wrap">
+        <svg class="ico"><path d="M0 0"/></svg>
+        <p>첫째</p>
+        <svg class="ico"><path d="M1 1"/></svg>
+        <p>둘째</p>
+      </div>
+      <footer>푸터</footer>`);
+    const outline = buildPageOutline(html);
+    const { document: reference } = parseHTML(html);
+    stripNoise(reference);
+
+    expect(outline.document.querySelectorAll("svg").length).toBe(2);
+    expect(outline.document.querySelectorAll("svg").length).toBe(
+      reference.querySelectorAll("svg").length,
+    );
+    const position = (doc: Document, text: string): number => {
+      const p = [...doc.querySelectorAll("p")].find((el) => el.textContent === text);
+      return p ? [...(p.parentElement?.children ?? [])].indexOf(p) + 1 : -1;
+    };
+    expect(position(outline.document, "둘째")).toBe(4);
+    expect(position(outline.document, "둘째")).toBe(position(reference, "둘째"));
+    expect(outline.document.documentElement.outerHTML).toBe(reference.documentElement.outerHTML);
   });
 
   it("개요 끝에 원본 문서의 링크 구역을 덧붙인다", () => {

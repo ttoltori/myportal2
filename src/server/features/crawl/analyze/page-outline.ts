@@ -162,7 +162,8 @@ function pickRoot(document: Document): Element | null {
   // 남는다. body가 비어 있으면 documentElement를 쓴다.
   // 빈 문자열은 documentElement 자체가 없고, 그때 body 접근자는 예외를 던진다.
   if (!document.documentElement) return null;
-  const body = document.body;
+  // document.body 접근자는 없는 head를 만들어 넣어 문서 구조를 바꾸므로 쓰지 않는다.
+  const body = document.documentElement.querySelector("body");
   if (body && body.childNodes.length > 0) return body;
   return document.documentElement ?? null;
 }
@@ -219,9 +220,10 @@ export function buildPageOutline(html: string): PageOutline {
   const root = pickRoot(document);
 
   stripNoise(document);
-  // stripNoise는 svg를 지우지 않는다. 아이콘 path 따위는 텍스트가 없어 번호는 받지
-  // 않지만 title 같은 자식 텍스트가 섞이므로 걷어낸다.
-  for (const svg of [...document.querySelectorAll("svg")]) svg.remove();
+  // stripNoise 외에는 아무것도 지우지 않는다. applySpec은 svg조차 지우지 않으므로,
+  // 개요가 더 지우면 형제 구성이 달라져 nth-child 경로가 개요 문서에서는 검증을
+  // 통과하고 실제 수집에서는 엉뚱한 요소를 뽑는다. 텍스트 없는 svg는 줄을 만들지 않으니
+  // 크기를 이유로 줄일 필요도 없다.
 
   const empty: PageOutline = { text: "", refs: [null], truncated: false, document };
   if (!root) return empty;
