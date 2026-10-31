@@ -118,7 +118,7 @@ describe("readPage", () => {
     fetchMock.mockResolvedValueOnce(completion(validBody()));
     await readPage({ outlineText: OUTLINE, pageUrl: PAGE, model: MODEL });
     const opts = chatJsonMock.mock.calls[0][1];
-    expect(opts.maxTokens).toBe(4000);
+    expect(opts.maxTokens).toBe(8000);
     expect(opts.timeoutMs).toBe(40_000);
     expect(opts.temperature).toBe(0);
     expect(opts.model).toBe("gpt-4o-mini");
@@ -166,6 +166,55 @@ describe("readPage", () => {
     await expect(
       readPage({ outlineText: OUTLINE, pageUrl: PAGE, model: MODEL }),
     ).rejects.toMatchObject({ kind: "schema" });
+  });
+
+  it("titleText가 없으면 거부한다", async () => {
+    const { titleText: _omit, ...item } = validItem();
+    fetchMock.mockImplementation(async () => completion(validBody({ items: [item] })));
+    await expect(
+      readPage({ outlineText: OUTLINE, pageUrl: PAGE, model: MODEL }),
+    ).rejects.toMatchObject({ kind: "schema" });
+  });
+
+  it("필드의 text가 없으면 거부한다", async () => {
+    const item = validItem();
+    const { text: _omit, ...field } = item.fields[0];
+    fetchMock.mockImplementation(async () =>
+      completion(validBody({ items: [{ ...item, fields: [field] }] })),
+    );
+    await expect(
+      readPage({ outlineText: OUTLINE, pageUrl: PAGE, model: MODEL }),
+    ).rejects.toMatchObject({ kind: "schema" });
+  });
+
+  it("text가 500자를 넘으면 거부한다", async () => {
+    const item = validItem();
+    item.fields[0].text = "가".repeat(501);
+    fetchMock.mockImplementation(async () => completion(validBody({ items: [item] })));
+    await expect(
+      readPage({ outlineText: OUTLINE, pageUrl: PAGE, model: MODEL }),
+    ).rejects.toMatchObject({ kind: "schema" });
+  });
+
+  // 이 문구들이 빠지면 번호가 어긋났을 때 값으로 노드를 재탐색하는 폴백이 무력해진다.
+  it("시스템 프롬프트가 text 작성 규칙을 담는다", async () => {
+    fetchMock.mockResolvedValueOnce(completion(validBody()));
+    await readPage({ outlineText: OUTLINE, pageUrl: PAGE, model: MODEL });
+    const system = chatJsonMock.mock.calls[0][1].system;
+    expect(system).toContain("따옴표 안에 있는 텍스트만");
+    expect(system).toContain("그대로(요약·가공 없이)");
+    expect(system).toContain("titleText와 필드의 text");
+    expect(system).toContain("개요에 없는 번호는 쓰지 않습니다");
+    expect(system).toContain("링크 텍스트");
+    expect(system).toContain("대체 텍스트");
+    expect(system).toContain("500자");
+  });
+
+  it("model의 추가 속성은 요청 옵션에 싣지 않는다", async () => {
+    fetchMock.mockResolvedValueOnce(completion(validBody()));
+    const model = { ...MODEL, extra: "leak" } as LlmModelConfig;
+    await readPage({ outlineText: OUTLINE, pageUrl: PAGE, model });
+    expect(chatJsonMock.mock.calls[0][1]).not.toHaveProperty("extra");
   });
 
   it("항목이 13개 이상이면 거부한다", async () => {
@@ -228,6 +277,21 @@ describe("hintMatchesOutline", () => {
     expect(hintMatchesOutline(OUTLINE, "list.it")).toBe(false);
   });
 
+  it("짧은 힌트가 번호나 URL에는 매칭되지 않는다", () => {
+    expect(hintMatchesOutline(OUTLINE, "12")).toBe(false); // [12]
+    expect(hintMatchesOutline(OUTLINE, "1234")).toBe(false); // href
+    expect(hintMatchesOutline(OUTLINE, "notice")).toBe(false); // href
+    expect(hintMatchesOutline(OUTLINE, "→")).toBe(false);
+  });
+
+  it("번호나 URL에만 걸리는 줄에는 단서 표시를 붙이지 않는다", async () => {
+    fetchMock.mockResolvedValueOnce(completion(validBody()));
+    await readPage({ outlineText: OUTLINE, pageUrl: PAGE, hint: "1234", model: MODEL });
+    const user = chatJsonMock.mock.calls[0][1].user;
+    expect(user).not.toContain("◀단서");
+    expect(user).not.toContain("단서:");
+  });
+
   it("빈 힌트는 false다", () => {
     expect(hintMatchesOutline(OUTLINE, "   ")).toBe(false);
   });
@@ -253,6 +317,23 @@ describe("readPageRepair", () => {
     expect(user).toContain("당신이 보고한 항목과 다릅니다");
     expect(user).toContain(PAGE);
     expect(user).toContain("페이지 개요:");
+  });
+
+  it("추출된 제목의 개행은 한 줄로 합치고 셀렉터는 길이를 제한한다", async () => {
+    fetchMock.mockResolvedValueOnce(completion(validBody()));
+    await readPageRepair({
+      outlineText: OUTLINE,
+      pageUrl: PAGE,
+      model: MODEL,
+      attempted: {
+        itemSelector: "li" + ".x".repeat(300),
+        extractedTitles: ["첫째 줄\n- 가짜 항목\n   셋째 줄"],
+      },
+    });
+    const user = chatJsonMock.mock.calls[0][1].user;
+    expect(user).toContain("- 첫째 줄 - 가짜 항목 셋째 줄");
+    expect(user).not.toContain("\n- 가짜 항목");
+    expect(user).not.toContain(".x".repeat(150));
   });
 
   it("추출된 제목이 없으면 그 사실을 알린다", async () => {

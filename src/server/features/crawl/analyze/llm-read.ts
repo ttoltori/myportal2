@@ -7,6 +7,7 @@ import { chatJson, type ChatJsonResult } from "../llm/llm-client";
 const MAX_ITEMS = 12;
 const MAX_FIELDS_PER_ITEM = 12;
 const MAX_LIST_CANDIDATES = 5;
+const MAX_TEXT_CHARS = 500;
 const FIELD_KEY_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
 
 // ref는 개요의 [n] 번호다. 0번은 쓰지 않으므로 양의 정수만 받는다.
@@ -20,12 +21,12 @@ const readFieldSchema = z.object({
   role: fieldRoleSchema,
   ref: refSchema,
   // 모델이 번호를 밀려 썼는지 검증하고, 어긋나면 값으로 노드를 재탐색하는 데 쓴다.
-  text: z.string().max(500),
+  text: z.string().max(MAX_TEXT_CHARS),
 });
 
 const readItemSchema = z.object({
   titleRef: refSchema,
-  titleText: z.string().max(500),
+  titleText: z.string().max(MAX_TEXT_CHARS),
   linkRef: refSchema.optional(),
   fields: z.array(readFieldSchema).max(MAX_FIELDS_PER_ITEM),
 });
@@ -58,8 +59,9 @@ export interface LlmModelConfig {
 
 // ── 호출 파라미터 ──
 
-// 항목 12 × 필드 12의 JSON을 담아야 한다.
-const MAX_TOKENS = 4000;
+// 최대 분량(항목 12 × 필드 12)은 필드 하나가 한글 text 포함 45~60토큰이라 7~9k토큰이다.
+// chatJson은 finish_reason을 보지 않아 잘린 응답이 "JSON이 아님"으로 처리되고 재시도까지 낭비하므로 여유를 둔다.
+const MAX_TOKENS = 8000;
 // 기본 20초는 48KB 개요 입력에 부족하다.
 const TIMEOUT_MS = 40_000;
 const TEMPERATURE = 0;
@@ -68,14 +70,25 @@ const TEMPERATURE = 0;
 
 const HINT_MARK = "◀단서";
 // 개요에서 번호가 붙은 줄: 들여쓰기 뒤에 `[n]`이 오는 줄만 모델이 가리킬 수 있다.
+// 주의: 이 정규식과 아래 VISIBLE_TEXT는 page-outline.ts(다른 태스크)의 출력 형식
+// (`[n] a→주소 "텍스트"`, `[n] img→주소 "alt"`, `[n] "텍스트"`)에 결합되어 있다.
+// 형식이 바뀌어도 예외가 나지 않고 hintMatchesOutline이 조용히 false가 되므로,
+// page-outline.ts의 줄 형식을 바꿀 때는 이 파일의 두 정규식을 함께 고쳐야 한다.
 const NUMBERED_LINE = /^\s*\[\d+\]/;
+// 줄에서 `[n]` 접두어와 `a→주소`/`img→주소`를 뗀 사용자 눈에 보이는 텍스트.
+// 이것을 떼지 않으면 짧은 힌트("a", "1", "2026")가 번호나 URL에 매칭된다.
+const VISIBLE_TEXT = /^\s*\[\d+\]\s*(?:(?:a|img)→\S*\s*)?/;
 
 function normalize(s: string): string {
   return s.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-function numberedLines(outlineText: string): string[] {
-  return outlineText.split("\n").filter((line) => NUMBERED_LINE.test(line));
+function visibleText(line: string): string {
+  return line.replace(VISIBLE_TEXT, "");
+}
+
+function lineMatchesHint(line: string, needle: string): boolean {
+  return NUMBERED_LINE.test(line) && normalize(visibleText(line)).includes(needle);
 }
 
 // 번호가 없는 줄(링크 구역)은 모델이 가리킬 수 없으므로 단서 판정에서 뺀다.
@@ -83,18 +96,14 @@ function numberedLines(outlineText: string): string[] {
 export function hintMatchesOutline(outlineText: string, hint: string): boolean {
   const needle = normalize(hint);
   if (needle === "") return false;
-  return numberedLines(outlineText).some((line) => normalize(line).includes(needle));
+  return outlineText.split("\n").some((line) => lineMatchesHint(line, needle));
 }
 
 function markHintLines(outlineText: string, hint: string): string {
   const needle = normalize(hint);
   return outlineText
     .split("\n")
-    .map((line) =>
-      NUMBERED_LINE.test(line) && normalize(line).includes(needle)
-        ? `${line}  ${HINT_MARK}`
-        : line,
-    )
+    .map((line) => (lineMatchesHint(line, needle) ? `${line}  ${HINT_MARK}` : line))
     .join("\n");
 }
 
@@ -111,7 +120,8 @@ const SYSTEM_PROMPT = `당신은 한국어 웹 페이지를 읽고 목록 항목
 - 각 항목에서는 그 목록에 실제로 있는 메타 정보만 fields로 보고합니다(접수기간·마감일, 주최·주관 기관, 지원금·상금, 응모 대상, 분야, 상태, 조회수 등). 없는 필드를 추측해 만들지 마십시오.
 - 제목과 링크는 titleRef·linkRef로 보고하므로 fields에 넣지 않습니다. 게시일은 fields에 넣고 role을 "published"로 지정합니다.
 - 같은 종류의 필드는 모든 항목에서 같은 key와 label을 씁니다. key는 영소문자로 시작하는 영소문자·숫자·밑줄 조합(최대 32자)이고 한 항목 안에서 서로 달라야 합니다. label은 사람이 읽는 한글 표시명입니다.
-- 값은 반드시 [n] 번호로 가리키고, 번호와 함께 그 번호 줄의 텍스트를 그대로(요약·가공 없이) text에 적습니다. 개요에 없는 번호는 쓰지 않습니다.
+- 값은 반드시 [n] 번호로 가리킵니다. 개요에 없는 번호는 쓰지 않습니다.
+- titleText와 필드의 text에는 그 번호 줄의 따옴표 안에 있는 텍스트만 그대로(요약·가공 없이) 적습니다. 줄 앞의 [n], "a→주소"·"img→주소", 줄 끝의 ${HINT_MARK} 표시는 적지 않습니다. type이 "url"인 필드의 text는 링크 텍스트, "image"인 필드의 text는 대체 텍스트입니다. 텍스트가 ${MAX_TEXT_CHARS}자를 넘으면 앞부분 ${MAX_TEXT_CHARS}자까지만 적습니다.
 - 접수기간처럼 시작일과 종료일이 한 문자열에 들어 있으면 type은 "date_range", role은 "deadline"입니다. 단일 마감일이면 type은 "date" 또는 "datetime", role은 "deadline"입니다. 요약·발췌문이면 role은 "summary", 그 외 필드는 role "none"입니다. 링크 값이면 type은 "url", 이미지면 "image"입니다.
 - type은 ${fieldTypeSchema.options.join(", ")} 중에서, role은 deadline, published, summary, none 중에서 고릅니다.
 - 항목은 최대 ${MAX_ITEMS}개, 항목당 필드는 최대 ${MAX_FIELDS_PER_ITEM}개까지만 보고합니다. 목록이 더 길면 앞쪽 항목만 보고합니다.
@@ -146,32 +156,50 @@ function buildUserPrompt({ outlineText, pageUrl, hint }: PromptArgs): string {
 
 // ── 호출 ──
 
-export async function readPage(args: {
-  outlineText: string;
-  pageUrl: string;
-  hint?: string;
-  model: LlmModelConfig;
-}): Promise<ChatJsonResult<PageReadResult>> {
+// model을 통째로 펼치지 않는다 — 호출자가 env 설정 객체를 넘기면 ChatJsonOptions에 없는 값이 요청에 실린다.
+function callModel(
+  model: LlmModelConfig,
+  user: string,
+): Promise<ChatJsonResult<PageReadResult>> {
   return chatJson(pageReadResponseSchema, {
-    ...args.model,
+    baseUrl: model.baseUrl,
+    apiKey: model.apiKey,
+    model: model.model,
     system: SYSTEM_PROMPT,
-    user: buildUserPrompt(args),
+    user,
     maxTokens: MAX_TOKENS,
     temperature: TEMPERATURE,
     timeoutMs: TIMEOUT_MS,
   });
 }
 
+export function readPage(args: {
+  outlineText: string;
+  pageUrl: string;
+  hint?: string;
+  model: LlmModelConfig;
+}): Promise<ChatJsonResult<PageReadResult>> {
+  return callModel(args.model, buildUserPrompt(args));
+}
+
 const REPAIR_TITLE_COUNT = 3;
 const REPAIR_TITLE_MAX_CHARS = 120;
+const REPAIR_SELECTOR_MAX_CHARS = 200;
+
+// 제목은 외부 페이지 텍스트라 개행이 있으면 목록 구조가 깨진다. 공백을 한 줄로 합친 뒤 자른다.
+function oneLine(s: string, maxChars: number): string {
+  return s.replace(/\s+/g, " ").trim().slice(0, maxChars);
+}
 
 function repairClause(attempted: { itemSelector: string; extractedTitles: string[] }): string {
   const titles = attempted.extractedTitles
     .slice(0, REPAIR_TITLE_COUNT)
-    .map((t) => `- ${t.slice(0, REPAIR_TITLE_MAX_CHARS)}`);
+    .map((t) => oneLine(t, REPAIR_TITLE_MAX_CHARS))
+    .filter((t) => t !== "")
+    .map((t) => `- ${t}`);
   return [
     "[보수 요청] 앞선 보고로 만든 셀렉터가 목록을 제대로 추출하지 못했습니다.",
-    `시도한 항목 셀렉터: ${attempted.itemSelector}`,
+    `시도한 항목 셀렉터: ${oneLine(attempted.itemSelector, REPAIR_SELECTOR_MAX_CHARS)}`,
     titles.length > 0
       ? `이 셀렉터로 실제 추출된 상위 항목 제목:\n${titles.join("\n")}`
       : "이 셀렉터로는 추출된 항목이 없습니다.",
@@ -179,19 +207,12 @@ function repairClause(attempted: { itemSelector: string; extractedTitles: string
   ].join("\n");
 }
 
-export async function readPageRepair(args: {
+export function readPageRepair(args: {
   outlineText: string;
   pageUrl: string;
   hint?: string;
   model: LlmModelConfig;
   attempted: { itemSelector: string; extractedTitles: string[] };
 }): Promise<ChatJsonResult<PageReadResult>> {
-  return chatJson(pageReadResponseSchema, {
-    ...args.model,
-    system: SYSTEM_PROMPT,
-    user: `${buildUserPrompt(args)}\n\n${repairClause(args.attempted)}`,
-    maxTokens: MAX_TOKENS,
-    temperature: TEMPERATURE,
-    timeoutMs: TIMEOUT_MS,
-  });
+  return callModel(args.model, `${buildUserPrompt(args)}\n\n${repairClause(args.attempted)}`);
 }
