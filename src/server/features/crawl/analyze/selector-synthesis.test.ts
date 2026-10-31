@@ -321,7 +321,7 @@ describe("ref 해소 (Review Focus 2)", () => {
   });
 
   it("한 항목에서만 범위 밖이면 나머지 항목으로 같은 key를 합성한다", () => {
-    const { outline, result } = synth(SIMPLE_LIST, (o) =>
+    const { result } = synth(SIMPLE_LIST, (o) =>
       simpleItems(o, (i) => [field("organization", i === 0 ? 9999 : refOf(o, SIMPLE_ORGS[i]), SIMPLE_ORGS[i])]),
     );
 
@@ -329,7 +329,6 @@ describe("ref 해소 (Review Focus 2)", () => {
     expect(result?.dropped).toHaveLength(1);
     const rows = applySpec(SIMPLE_LIST, result!.spec, PAGE_URL);
     expect(rows.map((r) => r.attrs.organization)).toEqual(SIMPLE_ORGS);
-    expect(outline.refs).not.toHaveLength(0);
   });
 
   it("모든 항목의 titleRef가 범위 밖이면 null을 반환한다", () => {
@@ -800,43 +799,110 @@ describe("상대 셀렉터 일반화", () => {
     expect(result?.dropped).toEqual([{ key: "v", reason: expect.stringContaining("공통 상대 셀렉터") }]);
   });
 
-  it("필드가 항목 루트 밖에 있으면(다음 행 등) 그 항목은 건너뛴다", () => {
-    const html = page(`
-      <table><tbody>
-        <tr><td><a href="/a/1">첫 번째 공고 제목입니다</a></td><td class="o">기관 하나</td></tr>
-        <tr><td><a href="/a/2">두 번째 공고 제목입니다</a></td><td class="o">기관 둘</td></tr>
-      </tbody></table>`);
-    const { result } = synth(html, (o) =>
-      SIMPLE_TITLES.slice(0, 2).map((title, i) => ({
+  const TWO_ROW_TABLE = page(`
+    <table><tbody>
+      <tr><td><a href="/a/1">첫 번째 공고 제목입니다</a></td><td class="o">기관 하나</td></tr>
+      <tr><td><a href="/a/2">두 번째 공고 제목입니다</a></td><td class="o">기관 둘</td></tr>
+    </tbody></table>`);
+
+  it("필드 요소가 일부 항목의 루트 밖이면 그 항목 샘플만 건너뛰고 나머지로 셀렉터를 만든다", () => {
+    const { result } = synth(TWO_ROW_TABLE, (o) =>
+      SIMPLE_TITLES.slice(0, 2).map((title) => ({
         titleRef: refOf(o, title),
         titleText: title,
-        // 첫 항목의 기관을 둘째 항목의 노드로 잘못 가리켰다. 텍스트도 둘째 값이라 복구 대상이 아니다.
+        // 첫 항목의 기관을 둘째 항목의 노드로 잘못 가리켰다(텍스트도 둘째 값이라 복구 대상이 아니다).
         fields: [field("organization", refOf(o, "기관 둘"), "기관 둘")],
       })),
     );
 
+    // 첫 항목의 샘플은 쓰이지 않았다: 어긋난 요소는 첫 항목 루트에서 상대 셀렉터가 만들어지지 않는다.
     expect(result?.spec.fields?.organization?.selector).toBe("td.o");
+    expect(result?.dropped).toEqual([]);
+    // 셀렉터는 항목 기준이라 첫 항목은 자기 칸의 값을 읽는다.
+    expect(applySpec(TWO_ROW_TABLE, result!.spec, PAGE_URL).map((r) => r.attrs.organization)).toEqual(["기관 하나", "기관 둘"]);
+  });
+
+  it("모든 항목의 필드 요소가 자기 루트 밖이면 필드를 버리고 사유를 남긴다", () => {
+    const { result } = synth(TWO_ROW_TABLE, (o) =>
+      SIMPLE_TITLES.slice(0, 2).map((title, i) => ({
+        titleRef: refOf(o, title),
+        titleText: title,
+        // 항목 0은 항목 1의 칸을, 항목 1은 항목 0의 칸을 가리킨다.
+        fields: [field("organization", refOf(o, ["기관 둘", "기관 하나"][i]), ["기관 둘", "기관 하나"][i])],
+      })),
+    );
+
+    expect(result?.spec.fields).toEqual({});
+    expect(result?.dropped).toEqual([{ key: "organization", reason: expect.stringContaining("공통 상대 셀렉터") }]);
   });
 });
 
-describe("과포함은 이 단계가 보증하지 않는다 (검증 단계의 몫)", () => {
-  it("같은 클래스가 목록 밖에도 붙어 있으면 itemSelector가 그것까지 잡는다", () => {
+describe("itemSelector 과포함", () => {
+  const titleItems = (o: PageOutline): ReadItem[] =>
+    SIMPLE_TITLES.map((t) => ({ titleRef: refOf(o, t), titleText: t, fields: [] }));
+
+  it("공통 조상 밖의 같은 클래스 요소(사이드바)는 조상을 접두로 붙여 걸러낸다", () => {
+    const html = page(`
+      <div class="rail"><ul>
+        <li class="it"><a href="/o/1">목록이 아닌 반복 요소 하나</a></li>
+        <li class="it"><a href="/o/2">목록이 아닌 반복 요소 둘</a></li>
+      </ul></div>
+      <ul class="list">
+        <li class="it"><a href="/a/1">첫 번째 공고 제목입니다</a></li>
+        <li class="it"><a href="/a/2">두 번째 공고 제목입니다</a></li>
+        <li class="it"><a href="/a/3">세 번째 공고 제목입니다</a></li>
+      </ul>`);
+    const { outline, result } = synth(html, titleItems);
+
+    // 수정 전에는 commonSelector의 `li.it`가 그대로 채택되어 5행이 나왔다.
+    expect(outline.document.querySelectorAll("li.it")).toHaveLength(5);
+    expect(result?.spec.itemSelector).toBe("ul.list li.it");
+    expect(applySpec(html, result!.spec, PAGE_URL).map((r) => r.title)).toEqual(SIMPLE_TITLES);
+  });
+
+  it("클래스·id가 없으면 루트까지의 경로로 다른 ul>li를 걸러낸다", () => {
+    const html = page(`
+      <div><ul>
+        <li><a href="/a/1">첫 번째 공고 제목입니다</a></li>
+        <li><a href="/a/2">두 번째 공고 제목입니다</a></li>
+        <li><a href="/a/3">세 번째 공고 제목입니다</a></li>
+      </ul></div>
+      <div><ul>
+        <li><a href="/o/1">목록이 아닌 반복 요소 하나</a></li>
+        <li><a href="/o/2">목록이 아닌 반복 요소 둘</a></li>
+      </ul></div>`);
+    const { outline, result } = synth(html, titleItems);
+
+    expect(outline.document.querySelectorAll("ul > li")).toHaveLength(5);
+    expect(result?.spec.itemSelector).not.toBe("ul > li");
+    expect(applySpec(html, result!.spec, PAGE_URL).map((r) => r.title)).toEqual(SIMPLE_TITLES);
+  });
+
+  it("행으로 감싼 그리드에서도 모든 루트를 포함하는 접두 후보로 사이드바 카드를 걸러낸다", () => {
+    const card = (n: number) => `<div class="card"><h3><a href="/c/${n}">카드 제목 ${n}번</a></h3></div>`;
+    const html = page(`<div class="grid">
+      <div class="row">${card(1)}${card(2)}</div><div class="row">${card(3)}${card(4)}</div></div>
+      <div class="side"><div class="card"><h3><a href="/o/1">목록 밖 카드 문구입니다</a></h3></div></div>`);
+    const { result } = synth(html, (o) =>
+      [1, 2, 3, 4].map((n) => ({ titleRef: refOf(o, `카드 제목 ${n}번`), titleText: `카드 제목 ${n}번`, fields: [] })),
+    );
+
+    expect(result?.spec.itemSelector).toBe("div.grid div.card");
+    expect(applySpec(html, result!.spec, PAGE_URL)).toHaveLength(4);
+  });
+
+  it("공통 조상 안쪽의 초과분(같은 컨테이너의 다른 li.it)은 줄지 않는다 — 검증 단계의 몫", () => {
     const html = page(`
       <ul class="list">
         <li class="it"><a href="/a/1">첫 번째 공고 제목입니다</a></li>
         <li class="it"><a href="/a/2">두 번째 공고 제목입니다</a></li>
         <li class="it"><a href="/a/3">세 번째 공고 제목입니다</a></li>
-      </ul>
-      <ul class="other">
-        <li class="it"><a href="/o/1">목록이 아닌 반복 요소 하나</a></li>
-        <li class="it"><a href="/o/2">목록이 아닌 반복 요소 둘</a></li>
+        <li class="it"><a href="/p/2">다음 페이지로 이동하는 링크</a></li>
       </ul>`);
-    const { result } = synth(html, (o) =>
-      SIMPLE_TITLES.map((t) => ({ titleRef: refOf(o, t), titleText: t, fields: [] })),
-    );
+    const { result } = synth(html, titleItems);
 
     expect(result?.spec.itemSelector).toBe("li.it");
-    expect(applySpec(html, result!.spec, PAGE_URL)).toHaveLength(5);
+    expect(applySpec(html, result!.spec, PAGE_URL)).toHaveLength(4);
   });
 
   it("목록 밖 반복 요소를 제목으로 삼지는 않는다 (루트는 보고된 제목에서만 나온다)", () => {

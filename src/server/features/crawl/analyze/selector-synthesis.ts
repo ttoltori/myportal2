@@ -1,5 +1,5 @@
 import type { FieldRole, FieldType } from "@myportal/api-contracts";
-import { commonSelector, relativeSelector } from "../dom-selector";
+import { commonSelector, parentSelector, relativeSelector } from "../dom-selector";
 import { SELF_TITLE_SELECTOR, type CrawlSpec, type FieldSelector } from "../extract";
 import { absolutize } from "../url";
 import type { PageReadResult } from "./llm-read";
@@ -41,6 +41,15 @@ interface Context {
   outline: PageOutline;
   dropped: Dropped[];
   remapped: number;
+  // 값 재탐색이 필드마다 일어나므로 문서 단위로 한 번만 만든다.
+  index?: DocumentIndex;
+}
+
+interface DocumentIndex {
+  order: Element[];
+  position: Map<Element, number>;
+  // 정규화한 텍스트. 요소마다 textContent를 다시 정규화하면 재탐색 한 번이 문서 전체 스캔이다.
+  texts: Map<Element, string>;
 }
 
 interface ResolvedField {
@@ -95,18 +104,28 @@ function textMatches(el: Element, text: string): boolean {
   return want === "" || normalizeText(elementText(el)).includes(want);
 }
 
+function documentIndex(ctx: Context): DocumentIndex {
+  if (ctx.index) return ctx.index;
+  const order = [...ctx.outline.document.querySelectorAll("*")].filter((el) => el.closest("head") === null);
+  ctx.index = {
+    order,
+    position: new Map(order.map((el, i) => [el, i])),
+    texts: new Map(order.map((el) => [el, normalizeText(elementText(el))])),
+  };
+  return ctx.index;
+}
+
 // 값을 포함하는 가장 안쪽 요소 중 원래 ref 요소와 문서 순서상 가장 가까운 것.
 // 같은 값(예: "접수중")이 여러 항목에 있어도 모델이 가리키려던 근처 항목을 고른다.
-function findNearestByText(document: Document, text: string, near: Element): Element | null {
+function findNearestByText(ctx: Context, text: string, near: Element): Element | null {
   const want = normalizeText(text);
   if (want === "") return null;
 
-  const order = [...document.querySelectorAll("*")].filter((el) => el.closest("head") === null);
-  const hits = new Set(order.filter((el) => normalizeText(elementText(el)).includes(want)));
+  const { order, position, texts } = documentIndex(ctx);
+  const hits = new Set(order.filter((el) => texts.get(el)?.includes(want)));
   const innermost = order.filter((el) => hits.has(el) && ![...el.children].some((c) => hits.has(c)));
   if (innermost.length === 0) return null;
 
-  const position = new Map(order.map((el, i) => [el, i]));
   const origin = position.get(near) ?? 0;
   const distance = (el: Element): number => Math.abs((position.get(el) ?? 0) - origin);
   return innermost.reduce((best, el) => (distance(el) < distance(best) ? el : best));
@@ -120,7 +139,7 @@ function resolveRef(ctx: Context, ref: number, text: string, key: string): Eleme
   }
   if (textMatches(el, text)) return el;
 
-  const found = findNearestByText(ctx.outline.document, text, el);
+  const found = findNearestByText(ctx, text, el);
   if (!found) {
     drop(ctx, key, `ref ${ref}의 텍스트가 보고한 값과 다르고 값으로도 찾지 못했다`);
     return null;
@@ -254,6 +273,55 @@ export function resolveItemRoots(titleEls: Element[], contents: Element[][] = []
     roots.push(root);
   }
   return roots;
+}
+
+// ── 3단계 보강: itemSelector를 모든 루트의 공통 조상으로 좁힌다 ──
+
+function matchesCovering(document: Document, selector: string, roots: Element[]): Element[] | null {
+  try {
+    const matched = [...document.querySelectorAll(selector)];
+    return roots.every((r) => matched.includes(r)) ? matched : null;
+  } catch {
+    return null;
+  }
+}
+
+function lowestCommonAncestor(roots: Element[]): Element | null {
+  return ancestorChain(roots[0]).slice(1).find((a) => roots.every((r) => a.contains(r))) ?? null;
+}
+
+// 공통 조상을 식별하는 접두 후보. 접두 뒤에는 원래 셀렉터를 그대로 이을 수도 있고,
+// 루트가 모두 같은 태그의 직계 자식이면 `> tag`로 이을 수도 있다(원래 셀렉터가 `ul > li`처럼
+// 부모를 이미 품은 형태일 때는 뒤쪽만 유효하다).
+function narrowingCandidates(document: Document, roots: Element[], ancestor: Element, selector: string): string[] {
+  const tags = new Set(roots.map((r) => r.tagName.toLowerCase()));
+  const directChildren = tags.size === 1 && roots.every((r) => r.parentElement === ancestor);
+  const prefixes = [parentSelector(ancestor)];
+  const absolute = relativeSelector(document.documentElement, ancestor);
+  if (absolute) prefixes.push(absolute);
+  return prefixes.flatMap((prefix) => [
+    `${prefix} ${selector}`,
+    ...(directChildren ? [`${prefix} > ${[...tags][0]}`] : []),
+  ]);
+}
+
+// commonSelector는 "대상을 모두 포함함"만 보증해서 목록 밖의 같은 클래스·같은 태그 요소까지 잡는다
+// (사이드바의 `li.it`). 우리는 공통 조상을 알고 있으니, 초과분이 그 밖에 있으면 조상을 접두로 붙인
+// 후보 중 여전히 모든 루트를 포함하면서 더 적게 잡는 것을 채택한다 — 거짓 음성이 생기지 않는다.
+// 조상 안쪽의 초과분(같은 컨테이너의 페이저 li 등)은 구분할 근거가 없으므로 검증 단계의 몫으로 남긴다.
+function narrowItemSelector(document: Document, roots: Element[], selector: string): string {
+  const matched = matchesCovering(document, selector, roots);
+  const ancestor = lowestCommonAncestor(roots);
+  if (!matched || !ancestor) return selector;
+  const rootSet = new Set(roots);
+  if (!matched.some((el) => !rootSet.has(el) && !ancestor.contains(el))) return selector;
+
+  let best = { selector, count: matched.length };
+  for (const candidate of narrowingCandidates(document, roots, ancestor, selector)) {
+    const covered = matchesCovering(document, candidate, roots);
+    if (covered && covered.length < best.count) best = { selector: candidate, count: covered.length };
+  }
+  return best.selector;
 }
 
 // ── 4단계: 상대 셀렉터의 일반화 ──
@@ -451,8 +519,10 @@ export function synthesizeSpec(
   if (!roots) return null;
   const located = locateItems(ctx, items, roots);
 
-  const itemSelector = commonSelector(located.map((l) => l.root));
-  if (!itemSelector) return null;
+  const itemRoots = located.map((l) => l.root);
+  const commonItemSelector = commonSelector(itemRoots);
+  if (!commonItemSelector) return null;
+  const itemSelector = narrowItemSelector(outline.document, itemRoots, commonItemSelector);
 
   const titleSelector = synthesizeTitleSelector(ctx, located);
   const linkSelector = synthesizeLinkSelector(ctx, located, pageUrl);
