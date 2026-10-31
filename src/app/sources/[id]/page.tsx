@@ -67,6 +67,20 @@ function fmtDT(iso: string | null): string {
   return `${pad2(d.getMonth() + 1)}.${pad2(d.getDate())} ${formatTimeHM(d)}`;
 }
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+// 힌트를 입력한 날짜와 경과 일수. setAt이 null이면 힌트 날짜가 기록되기 전
+// 버전의 스펙이므로 모른다고 밝힌다 — 날짜를 추정해 채우지 않는다.
+function hintAgeLabel(setAt: string | null): string {
+  if (!setAt) return "입력 날짜 알 수 없음";
+  const t = Date.parse(setAt);
+  if (Number.isNaN(t)) return "입력 날짜 알 수 없음";
+  const d = new Date(t);
+  const date = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  const days = Math.max(0, Math.floor((Date.now() - t) / MS_PER_DAY));
+  return `${date} 입력, ${days}일 경과`;
+}
+
 function intervalLabel(min: number): string {
   if (min < 60) return `${min}분`;
   if (min % 60 === 0) return `${min / 60}시간`;
@@ -142,15 +156,18 @@ export default function SourceDetailPage() {
     }
   }
 
-  async function reanalyze() {
+  // hintOverride는 '힌트 없이 재분석' 버튼이 상태 갱신을 기다리지 않고 빈 문자열을
+  // 확정해서 넘기기 위한 것이다.
+  async function reanalyze(hintOverride?: string) {
     if (busy) return;
     setBusy(true);
     log("다시 분석 요청 … 진행 중");
     try {
-      // 박스를 비운 것은 '힌트 없이 간다'는 의사다. 생략하면 서버가 저장된
-      // 힌트를 되살려 사용자가 낡은 힌트를 버릴 수 없게 된다.
+      // 박스를 비운 것은 '힌트 없이 간다'는 의사다. 생략(undefined)하면 서버가 저장된
+      // 힌트를 되살려 사용자가 낡은 힌트를 버릴 수 없게 된다. 그래서 항상
+      // 문자열로 보내고, 비어 있으면 빈 문자열("")이 그대로 나간다.
       const res = await api.sources.reanalyze(sourceId, {
-        hint: panelHint.trim(),
+        hint: (hintOverride ?? panelHint).trim(),
       });
       setReanalysis(res);
       setPanelFields(res.preview?.fields ?? []);
@@ -176,6 +193,8 @@ export default function SourceDetailPage() {
         fields: panelFields,
         fetchStrategy: preview.fetchStrategy,
         hint: panelHint.trim() || undefined,
+        // 분석이 측정한 수집 프로파일. 빠지면 적용한 스펙이 기본 수집 방식으로 돌아간다.
+        profile: preview.profile ?? null,
       });
       log(
         `버전 ${res.version} 적용 · 백필 ${res.backfilled}건 · 신규 ${res.inserted}건` +
@@ -369,7 +388,7 @@ export default function SourceDetailPage() {
                     {s.label}
                     {s.detail ? ` — ${s.detail}` : ""}
                   </span>
-                  <span className={STEP_STAMP[s.status] ?? "stamp"}>
+                  <span className={`${STEP_STAMP[s.status] ?? "stamp"} shrink-0`}>
                     {s.status}
                   </span>
                 </div>
@@ -381,15 +400,16 @@ export default function SourceDetailPage() {
               className="font-mono text-ink-2"
               style={{ display: "block", marginTop: 14, marginBottom: 2, fontSize: 11 }}
             >
-              목록 항목 힌트 (선택)
+              힌트 (선택) — 자동 분석이 엉뚱한 영역을 잡을 때만 쓰세요.
             </label>
-            {storedHint && (
+            {/* 분석 전에는 서버의 storedHint가 없으므로 스펙에서 읽은 값으로 안내한다. */}
+            {!reanalysis && storedHint && (
               <div
                 className="font-mono text-ink-2"
                 style={{ marginBottom: 4, fontSize: 11 }}
               >
-                저장된 힌트 ‘{String(storedHint)}’를 채웠습니다 — 낡았으면 고치거나
-                비우세요.
+                저장된 힌트 ‘{String(storedHint)}’를 채웠습니다 — 목록 내용은
+                바뀌므로 낡았을 수 있습니다. 고치거나 비우세요.
               </div>
             )}
             <div className="flex items-center gap-2">
@@ -415,6 +435,49 @@ export default function SourceDetailPage() {
               </button>
             </div>
 
+            {reanalysis?.storedHint && (
+              <div
+                className="font-mono mt-2"
+                style={{ fontSize: 11 }}
+              >
+                <div className="text-ink-2">
+                  저장된 힌트: “{reanalysis.storedHint.value}” (
+                  {hintAgeLabel(reanalysis.storedHint.setAt)})
+                </div>
+                {/* 경과 일수만으로는 경고하지 않는다. 게시판마다 목록이 바뀌는 속도가
+                    달라 임의의 기준일은 틀리고, 현재 페이지에 문자열이 있는지가 사실이다. */}
+                {!reanalysis.storedHint.matchesPage && (
+                  <div
+                    className="flex items-center justify-between gap-3 mt-1"
+                    style={{
+                      border: "1px solid var(--rule)",
+                      padding: "6px 10px",
+                    }}
+                  >
+                    <div>
+                      <div>
+                        ⚠ 이 문자열이 현재 페이지에 없습니다. 목록 내용이
+                        바뀌었을 수 있습니다.
+                      </div>
+                      <div className="text-ink-2">
+                        비우고 다시 분석하면 자동 판단으로 진행합니다.
+                      </div>
+                    </div>
+                    <button
+                      className="btn shrink-0"
+                      disabled={busy || sub.fetchStrategy === "link"}
+                      onClick={() => {
+                        setPanelHint("");
+                        void reanalyze("");
+                      }}
+                    >
+                      힌트 없이 재분석
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {reanalysis?.pageText && (
               <div className="mt-4">
                 <div className="flex items-baseline justify-between">
@@ -429,7 +492,7 @@ export default function SourceDetailPage() {
                   className="font-mono text-ink-2"
                   style={{ fontSize: 11, marginTop: 4 }}
                 >
-                  실제 목록 항목의 텍스트를 복사해 ‘목록 항목 힌트’에 붙여넣고
+                  실제 목록 항목의 텍스트를 복사해 ‘힌트’에 붙여넣고
                   다시 분석하세요.
                 </div>
                 <input

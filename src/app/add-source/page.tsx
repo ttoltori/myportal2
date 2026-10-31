@@ -21,6 +21,9 @@ const EXAMPLES = [
   },
 ];
 
+// 서버(run-analysis.ts)가 힌트 문자열이 페이지에 없을 때 warn으로 남기는 단계의 라벨.
+const HINT_STEP_LABEL = "힌트 확인";
+
 interface LogLine {
   time: string;
   label: string;
@@ -179,6 +182,9 @@ export default function AddSourcePage() {
         // 분석 시 확정된 스펙/미리보기를 그대로 전달해 저장 시 재추출을 방지한다.
         spec: result?.preview?.spec ?? null,
         previewRows: result?.preview?.rows,
+        // 분석이 측정한 렌더링 설정. 빠지면 등록된 소스가 기본값으로 수집되어
+        // 렌더링이 필요한 소스는 0건이 될 수 있다.
+        profile: result?.preview?.profile ?? null,
       });
       setSaved(res.subscriptionId);
       showToast(
@@ -195,11 +201,11 @@ export default function AddSourcePage() {
 
   const previewRows = result?.preview?.rows ?? [];
 
-  // 힌트를 입력했는데 마지막 '힌트 영역 선택' 단계가 실패(warn)로 끝났으면
+  // 힌트를 입력했는데 마지막 '힌트 확인' 단계가 실패(warn)로 끝났으면
   // 수집된 페이지 텍스트를 우측에 보여 사용자가 직접 힌트를 고르게 한다.
   const hintMissed =
     (result?.steps ?? [])
-      .filter((s) => s.label === "힌트 영역 선택")
+      .filter((s) => s.label === HINT_STEP_LABEL)
       .at(-1)?.status === "warn";
   const pageTextLines = (result?.pageText ?? "").split("\n").filter(Boolean);
   const pq = pageTextFilter.trim().toLowerCase();
@@ -258,18 +264,19 @@ export default function AddSourcePage() {
               className="font-mono text-ink-2"
               style={{ display: "block", marginTop: 14, marginBottom: 2, fontSize: 11 }}
             >
-              목록 항목 힌트 (선택)
+              힌트 (선택) — 자동 분석이 엉뚱한 영역을 잡을 때만 쓰세요.
             </label>
             <input
               className="input-line"
               style={{ fontSize: 13 }}
-              placeholder="목록에 표시되는 항목 텍스트 일부 — 예: 2026 한국외식산업연구원 외식경영스타 아이디어 공모전"
+              placeholder="지금 목록에 보이는 제목의 일부 — 예: 외식경영스타 아이디어 공모전"
               value={hint}
               onChange={(e) => setHint(e.target.value)}
             />
+            {/* 힌트는 분석 시점 목록의 스냅샷이라 반드시 낡는다. 그 사실을 상시 보여준다. */}
             <div className="font-mono text-ink-2" style={{ fontSize: 11, marginTop: 2 }}>
-              자동 분석이 메뉴 등 엉뚱한 영역을 잡을 때, 실제 목록 항목의 텍스트를
-              붙여넣으면 그 영역을 기준으로 추출합니다.
+              지금 목록에 보이는 제목의 일부를 넣습니다. 목록 내용은 바뀌므로 이
+              문자열은 시간이 지나면 의미가 없어집니다. 영구 설정이 아닙니다.
             </div>
 
             <div className="mt-3 flex items-center gap-3">
@@ -323,7 +330,7 @@ export default function AddSourcePage() {
                       {l.time} {l.label}
                       {l.detail ? ` — ${l.detail}` : ""}
                     </span>
-                    <span className={STAMP_FOR[l.status] ?? "stamp"}>
+                    <span className={`${STAMP_FOR[l.status] ?? "stamp"} shrink-0`}>
                       {l.status}
                     </span>
                   </div>
@@ -441,7 +448,7 @@ export default function AddSourcePage() {
                 style={{ fontSize: 11, marginTop: 4 }}
               >
                 힌트 영역을 찾지 못했습니다. 아래에서 실제 목록 항목의 텍스트를
-                복사해 ‘목록 항목 힌트’에 붙여넣고 다시 분석하세요.
+                복사해 ‘힌트’에 붙여넣고 다시 분석하세요.
               </div>
               <input
                 className="input-line mt-2"
