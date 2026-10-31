@@ -331,9 +331,14 @@ function feedProfile(): FetchProfile {
   return { mode: "feed", measuredAt: new Date().toISOString() };
 }
 
-// 렌더링 필요 여부의 단일 출처는 프로파일이지만, 수집기가 프로파일을 읽기 전까지는
-// spec.render를 본다. 이 플래그가 빠지면 렌더링이 필요한 소스가 정적 HTML로 0건을 받아
-// 조용히 죽으므로 프로파일과 같은 값을 함께 남긴다.
+// 렌더링 필요 여부를 프로파일(sources.fetch_profile)과 스펙(spec.render) 양쪽에 남기는 것은
+// 중복이 아니라 서로 다른 실패 경로를 덮는 이중 방어다. 지우지 말 것.
+// - 프로파일 → 스펙 방향: 등록 시 클라이언트가 보낸 프로파일은 서버가 다시 검증하고, 검증에
+//   실패하면 프로파일 없이 등록한다. 그러면 profileFromLegacySpec(spec)이 spec.render로 mode를
+//   유도하는데, 이 플래그가 없으면 렌더링이 필요한 소스가 정적 HTML로 0건을 받아 조용히 죽는다
+//   (설계서 §1-3이 인용하는 사고).
+// - 스펙 → 프로파일 방향: 자가복구가 스펙을 교체하면 spec.render가 사라지지만, 그때는 프로파일이
+//   남아 렌더링을 유지한다.
 function withRenderFlag(spec: CrawlSpec, profile: FetchProfile | null): CrawlSpec {
   if (profile?.mode === "rendered" && spec.strategy !== "rss") spec.render = true;
   return spec;

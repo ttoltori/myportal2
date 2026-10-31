@@ -80,6 +80,7 @@ const MSG = {
   quotaExceeded: `일별 AI 분석 한도를 초과했습니다${FALLBACK_SUFFIX}`,
   callFailed: `AI 분석 호출에 실패했습니다${FALLBACK_SUFFIX}`,
   noList: "AI가 이 페이지에서 목록을 찾지 못했습니다 (상세 페이지로 판단)",
+  contradictory: `AI가 목록 페이지라고 답했지만 항목을 하나도 짚지 못했습니다${FALLBACK_SUFFIX}`,
   synthesisFailed: `AI가 읽은 항목을 셀렉터로 옮길 수 없었습니다${FALLBACK_SUFFIX}`,
   verificationFailed: `추출 결과가 AI가 읽은 내용과 달랐습니다${FALLBACK_SUFFIX}`,
   retrying: "추출 결과가 AI가 읽은 내용과 달라 한 번 더 읽습니다",
@@ -326,6 +327,18 @@ async function repairRead(
   return read;
 }
 
+// items가 빈 응답을 해석한다. 상세·불명이라고 답했다면 목록이 없다는 판단을 믿는다.
+// 반대로 "list"라면서 항목을 하나도 못 짚은 응답은 스스로 모순이라 믿을 근거가 없으므로
+// 폴백이 목록을 찾게 한다 (judgedNoList=false).
+function interpretEmptyRead(read: PageReadResult, steps: AnalyzeStep[]): LlmPathResult {
+  if (read.pageKind === "list") {
+    steps.push(step(LABEL.read, "warn", MSG.contradictory));
+    return { read, accepted: null, judgedNoList: false };
+  }
+  steps.push(step(LABEL.read, "ok", MSG.noList));
+  return { read, accepted: null, judgedNoList: true };
+}
+
 async function runLlmPath(
   args: RunAnalysisArgs,
   steps: AnalyzeStep[],
@@ -346,8 +359,8 @@ async function runLlmPath(
     steps.push(step(LABEL.read, "warn", MSG.callFailed));
     return NO_LLM_RESULT;
   }
-  steps.push(step(LABEL.read, "ok", first.items.length === 0 ? MSG.noList : readDetail(first)));
-  if (first.items.length === 0) return { read: first, accepted: null, judgedNoList: true };
+  if (first.items.length === 0) return interpretEmptyRead(first, steps);
+  steps.push(step(LABEL.read, "ok", readDetail(first)));
 
   const attempt = synthesizeAndVerify(args, first);
   // 합성 자체가 안 된 경우에는 시도한 셀렉터가 없어 보수 호출로 알려 줄 것이 없다.

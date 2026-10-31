@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import type { AnalyzeStep } from "@myportal/api-contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hasLlm } from "../../../config/env";
+import { generateSpec } from "../extract";
 import { LlmError } from "../llm/llm-client";
 import { checkLlmQuota, recordLlmCall } from "../llm/usage";
 import { readPage, readPageRepair, type PageReadResult } from "./llm-read";
@@ -21,6 +22,11 @@ vi.mock("./llm-read", async (importOriginal) => ({
   readPage: vi.fn(),
   readPageRepair: vi.fn(),
 }));
+// 폴백이 실제로 불렸는지 보기 위해 generateSpec만 실제 구현을 감싼다.
+vi.mock("../extract", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../extract")>();
+  return { ...actual, generateSpec: vi.fn(actual.generateSpec) };
+});
 // 검증은 실제 구현을 감싸 두고, 필요한 테스트에서만 "미달" 판정을 한 번 강제한다.
 vi.mock("./verify", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./verify")>();
@@ -114,6 +120,7 @@ beforeEach(() => {
   vi.mocked(readPage).mockReset();
   vi.mocked(readPageRepair).mockReset();
   vi.mocked(verifySpec).mockReset().mockImplementation(actualVerify);
+  vi.mocked(generateSpec).mockClear();
   vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
 
@@ -432,6 +439,47 @@ describe("runAnalysis — 상세 페이지와 부모 후보", () => {
     const r = await runAnalysis(args);
 
     expect(r.listCandidates).toEqual([{ label: "알림마당", url: "https://www.example.kr/news" }]);
+  });
+
+  it("pageKind=detail인데 items가 비면 LLM을 믿고 휴리스틱 폴백을 돌리지 않는다", async () => {
+    const args = argsFor(TABLE_HTML);
+    vi.mocked(readPage).mockResolvedValue(llmResult(detailRead([])));
+
+    const r = await runAnalysis(args);
+
+    expect(generateSpec).not.toHaveBeenCalled();
+    expect(r.spec).toBeNull();
+    expect(r.fieldSource).toBeNull();
+    expect(stepOf(r.steps, "AI 페이지 해석")).toMatchObject({ status: "ok" });
+    expect(stepOf(r.steps, "AI 페이지 해석")?.detail).toContain("상세 페이지로 판단");
+  });
+
+  it("pageKind=unknown인데 items가 비어도 폴백을 돌리지 않는다", async () => {
+    const args = argsFor(TABLE_HTML);
+    vi.mocked(readPage).mockResolvedValue(llmResult({ ...detailRead([]), pageKind: "unknown" }));
+
+    const r = await runAnalysis(args);
+
+    expect(generateSpec).not.toHaveBeenCalled();
+    expect(r.spec).toBeNull();
+  });
+
+  it("pageKind=list인데 items가 비면 모순된 응답이라 휴리스틱 폴백을 돌린다", async () => {
+    const args = argsFor(TABLE_HTML);
+    vi.mocked(readPage).mockResolvedValue(llmResult({ ...detailRead([]), pageKind: "list" }));
+
+    const r = await runAnalysis(args);
+
+    expect(generateSpec).toHaveBeenCalledTimes(1);
+    expect(r.fieldSource).toBe("heuristic");
+    expect(r.rows.length).toBeGreaterThanOrEqual(3);
+    expect(r.pageKind).toBe("list");
+    // 보수 호출 대상이 아니다: 검증할 스펙이 없다.
+    expect(readPageRepair).not.toHaveBeenCalled();
+    const read = stepOf(r.steps, "AI 페이지 해석");
+    expect(read?.status).toBe("warn");
+    expect(read?.detail).toContain("항목을 하나도 짚지 못했습니다");
+    expect(read?.detail).not.toContain("상세 페이지로 판단");
   });
 
   it("목록이 있는 페이지에서는 listCandidates를 돌려주지 않는다", async () => {
