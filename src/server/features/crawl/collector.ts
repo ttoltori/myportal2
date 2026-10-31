@@ -108,6 +108,7 @@ async function analyzeForRepair(args: {
   finalUrl: string;
   hint?: string;
   hintSetAt?: string;
+  startedAt: number;
 }): Promise<RepairAttempt | null> {
   try {
     const analysis = await runAnalysis({
@@ -123,11 +124,16 @@ async function analyzeForRepair(args: {
       // 무인 경로의 보수 호출은 기대 이득이 낮고 시스템 한도를 같이 쓴다. 호출 상한은
       // 힌트 없이 1회 + 힌트로 1회 = 최대 2회.
       allowRepair: false,
+      // 두 번의 분석이 하나의 시간 예산을 나눠 쓰게 한다. 호출마다 시계를 새로 시작하면
+      // 각자 전체 예산이 남은 줄 알고 합계가 플랫폼 실행 한도를 넘는다.
+      startedAt: args.startedAt,
     });
     if (!analysis.spec || analysis.rows.length === 0 || analysis.strategy !== "html") return null;
     return { spec: analysis.spec, rows: analysis.rows };
   } catch (err) {
-    console.error("[repair] 자가복구 분석 실패:", err);
+    // 프로바이더 오류 원문에는 요청 본문이나 키 조각이 섞일 수 있어 종류만 남긴다.
+    const kind = err instanceof Error ? err.name : typeof err;
+    console.error(`[repair] 자가복구 분석 실패: source=${args.sourceId} kind=${kind}`);
     return null;
   }
 }
@@ -139,9 +145,10 @@ async function analyzeWithHintLast(
   sourceId: string,
   html: string,
   finalUrl: string,
-  prevSpec?: CrawlSpec | null,
+  prevSpec: CrawlSpec | null | undefined,
+  startedAt: number,
 ): Promise<RepairAttempt | null> {
-  const withoutHint = await analyzeForRepair({ sourceId, html, finalUrl });
+  const withoutHint = await analyzeForRepair({ sourceId, html, finalUrl, startedAt });
   if (withoutHint || !prevSpec?.hint) return withoutHint;
   // 원래 입력 시각을 넘긴다. 생략하면 "지금"으로 찍혀 낡음 표시가 사라진다.
   return analyzeForRepair({
@@ -150,6 +157,7 @@ async function analyzeWithHintLast(
     finalUrl,
     hint: prevSpec.hint,
     hintSetAt: prevSpec.hintSetAt,
+    startedAt,
   });
 }
 
@@ -158,8 +166,12 @@ export async function repairSpec(
   html: string,
   finalUrl: string,
   prevSpec?: CrawlSpec | null,
+  // 시간 예산의 기준점. 수집기가 이미 fetch·렌더링에 쓴 시간도 한도(maxDuration)에 포함되므로
+  // 호출자(collectSource)가 수집 시작 시각을 넘기는 쪽이 정확하다. 생략하면 이 함수 진입
+  // 시각을 쓰는데, 그보다 앞서 쓴 시간을 모르는 차선이라 예산을 실제보다 넉넉하게 본다.
+  startedAt: number = Date.now(),
 ): Promise<{ spec: CrawlSpec; rows: ExtractedRow[] } | null> {
-  const regenerated = await analyzeWithHintLast(sourceId, html, finalUrl, prevSpec);
+  const regenerated = await analyzeWithHintLast(sourceId, html, finalUrl, prevSpec, startedAt);
   if (!regenerated) return null;
 
   // 새 스펙에는 이전 스펙의 render/hint가 없으므로 다시 입힌다.
@@ -398,6 +410,7 @@ export async function collectSource(
           body,
           finalUrl,
           spec,
+          started,
         );
         if (repaired) extracted = repaired.rows;
       }

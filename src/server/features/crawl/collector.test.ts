@@ -294,6 +294,74 @@ describe("repairSpec", () => {
     expect(db.transaction).not.toHaveBeenCalled();
   });
 
+  // 두 분석이 호출마다 시계를 새로 시작하면 각자 전체 예산이 남은 줄 알고 합계가 플랫폼
+  // 실행 한도를 넘는다. 같은 시작 시각을 받아야 2회차가 남은 예산을 보고 스스로 판단한다.
+  describe("시간 예산", () => {
+    it("힌트 재시도까지 간 두 분석이 같은 startedAt을 받는다", async () => {
+      fakeDb(null);
+      vi.mocked(runAnalysis).mockResolvedValue(outcome(null));
+      const T0 = 1_700_000_000_000;
+
+      await repairSpec("src-1", LIST_HTML, PAGE_URL, prevWithHint, T0);
+
+      const [first, second] = vi.mocked(runAnalysis).mock.calls.map((c) => c[0]);
+      expect(first.startedAt).toBe(T0);
+      expect(second.startedAt).toBe(T0);
+    });
+
+    it("1회차가 오래 걸려도 2회차의 시작 시각은 1회차와 같다 (시계를 다시 시작하지 않는다)", async () => {
+      fakeDb(null);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(new Date("2026-11-01T00:00:00Z"));
+        vi.mocked(runAnalysis)
+          .mockImplementationOnce(async () => {
+            vi.setSystemTime(new Date("2026-11-01T00:01:20Z")); // 1회차가 80초를 썼다
+            return outcome(null);
+          })
+          .mockResolvedValueOnce(outcome(null));
+
+        // startedAt을 생략하면 repairSpec 진입 시각이 두 호출에 공통으로 쓰인다.
+        await repairSpec("src-1", LIST_HTML, PAGE_URL, prevWithHint);
+
+        const [first, second] = vi.mocked(runAnalysis).mock.calls.map((c) => c[0]);
+        expect(first.startedAt).toBe(Date.parse("2026-11-01T00:00:00Z"));
+        expect(second.startedAt).toBe(first.startedAt);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("collectSource는 수집 시작 시각을 넘긴다 (fetch·렌더링에 쓴 시간도 예산에 든다)", async () => {
+      fakeCollectDb({
+        fetch_profile: { mode: "rendered", settleMs: 2000, measuredAt: MEASURED_AT },
+        // LIST_HTML에 없는 셀렉터라 0건 추출이 된다.
+        spec: { strategy: "html", itemSelector: "li.nomatch", fields: {} },
+        consecutive_failures: 2,
+      });
+      vi.mocked(robotsAllowed).mockResolvedValue(true);
+      vi.mocked(runAnalysis).mockResolvedValue(outcome(null));
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const t0 = new Date("2026-11-01T00:00:00Z");
+        vi.setSystemTime(t0);
+        vi.mocked(renderPage).mockImplementation(async () => {
+          vi.setSystemTime(new Date("2026-11-01T00:00:40Z")); // 렌더링이 40초를 썼다
+          return { html: LIST_HTML, finalUrl: PAGE_URL } as never;
+        });
+
+        await collectSource("src-1");
+
+        // 렌더링이 실제로 시간을 쓴 뒤에도 기준점이 수집 시작이어야 의미 있는 단언이다.
+        expect(renderPage).toHaveBeenCalled();
+        expect(runAnalysis).toHaveBeenCalled();
+        expect(vi.mocked(runAnalysis).mock.calls[0][0].startedAt).toBe(t0.getTime());
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe("실패는 예외로 새지 않는다", () => {
     it("분석이 던져도 null을 반환한다 (힌트가 있으면 재시도까지 한다)", async () => {
       const db = fakeDb(null);
@@ -304,6 +372,14 @@ describe("repairSpec", () => {
 
       expect(runAnalysis).toHaveBeenCalledTimes(2);
       expect(db.inserted()).toBeNull();
+      // 오류 원문(프로바이더 응답·키 조각이 섞일 수 있다)은 로그 인자 어디에도 없어야 한다.
+      expect(errorLog).toHaveBeenCalled();
+      const logged = JSON.stringify(errorLog.mock.calls);
+      expect(logged).not.toContain("sk-live-SECRET");
+      expect(logged).not.toContain("provider down");
+      // 분류 가능한 정보(소스 id, 오류 종류)는 남는다.
+      expect(logged).toContain("src-1");
+      expect(logged).toContain("Error");
       errorLog.mockRestore();
     });
 
@@ -511,6 +587,7 @@ function fakeCollectDb(source: {
   etag?: string | null;
   last_modified?: string | null;
   feed_url?: string | null;
+  consecutive_failures?: number;
 }) {
   const query = vi.fn(async (sql: string) => {
     if (sql === sourcesSql.findById) {
@@ -528,7 +605,7 @@ function fakeCollectDb(source: {
             etag: source.etag ?? null,
             last_modified: source.last_modified ?? null,
             feed_url: source.feed_url ?? null,
-            consecutive_failures: 0,
+            consecutive_failures: source.consecutive_failures ?? 0,
             fetch_profile: source.fetch_profile ?? {},
           },
         ],
