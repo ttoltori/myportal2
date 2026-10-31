@@ -21,9 +21,6 @@ const EXAMPLES = [
   },
 ];
 
-// 서버(run-analysis.ts)가 힌트 문자열이 페이지에 없을 때 warn으로 남기는 단계의 라벨.
-const HINT_STEP_LABEL = "힌트 확인";
-
 interface LogLine {
   time: string;
   label: string;
@@ -201,12 +198,9 @@ export default function AddSourcePage() {
 
   const previewRows = result?.preview?.rows ?? [];
 
-  // 힌트를 입력했는데 마지막 '힌트 확인' 단계가 실패(warn)로 끝났으면
-  // 수집된 페이지 텍스트를 우측에 보여 사용자가 직접 힌트를 고르게 한다.
-  const hintMissed =
-    (result?.steps ?? [])
-      .filter((s) => s.label === HINT_STEP_LABEL)
-      .at(-1)?.status === "warn";
+  // 서버는 힌트가 페이지에서 매칭되지 않았을 때만 pageText를 채운다. 사람이 읽는
+  // 단계 라벨은 다듬어질 수 있으므로 상태 판정에 쓰지 않고 이 필드의 존재를 신호로 삼는다.
+  const hintMissed = result?.pageText != null;
   const pageTextLines = (result?.pageText ?? "").split("\n").filter(Boolean);
   const pq = pageTextFilter.trim().toLowerCase();
   const filteredPageLines = pq
