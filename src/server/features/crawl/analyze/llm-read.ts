@@ -63,7 +63,9 @@ export interface LlmModelConfig {
 // chatJson은 finish_reason을 보지 않아 잘린 응답이 "JSON이 아님"으로 처리되고 재시도까지 낭비하므로 여유를 둔다.
 const MAX_TOKENS = 8000;
 // 기본 20초는 48KB 개요 입력에 부족하다.
-const TIMEOUT_MS = 40_000;
+// 호출자가 timeoutMs를 넘기지 않으면 이 값이 시도당 timeout이다. 남은 시간이 부족한 호출자는
+// 더 짧은 값을 넘길 수 있지만 이 값보다 길게 잡을 이유는 없다.
+export const READ_TIMEOUT_MS = 40_000;
 const TEMPERATURE = 0;
 
 // ── 힌트 ──
@@ -160,6 +162,7 @@ function buildUserPrompt({ outlineText, pageUrl, hint }: PromptArgs): string {
 function callModel(
   model: LlmModelConfig,
   user: string,
+  timeoutMs: number = READ_TIMEOUT_MS,
 ): Promise<ChatJsonResult<PageReadResult>> {
   return chatJson(pageReadResponseSchema, {
     baseUrl: model.baseUrl,
@@ -169,7 +172,7 @@ function callModel(
     user,
     maxTokens: MAX_TOKENS,
     temperature: TEMPERATURE,
-    timeoutMs: TIMEOUT_MS,
+    timeoutMs,
   });
 }
 
@@ -178,8 +181,10 @@ export function readPage(args: {
   pageUrl: string;
   hint?: string;
   model: LlmModelConfig;
+  // 시도당 timeout(ms). 생략하면 READ_TIMEOUT_MS. chatJson은 스키마 불일치 시 이 값으로 2회 시도한다.
+  timeoutMs?: number;
 }): Promise<ChatJsonResult<PageReadResult>> {
-  return callModel(args.model, buildUserPrompt(args));
+  return callModel(args.model, buildUserPrompt(args), args.timeoutMs);
 }
 
 const REPAIR_TITLE_COUNT = 3;
@@ -213,6 +218,11 @@ export function readPageRepair(args: {
   hint?: string;
   model: LlmModelConfig;
   attempted: { itemSelector: string; extractedTitles: string[] };
+  timeoutMs?: number;
 }): Promise<ChatJsonResult<PageReadResult>> {
-  return callModel(args.model, `${buildUserPrompt(args)}\n\n${repairClause(args.attempted)}`);
+  return callModel(
+    args.model,
+    `${buildUserPrompt(args)}\n\n${repairClause(args.attempted)}`,
+    args.timeoutMs,
+  );
 }

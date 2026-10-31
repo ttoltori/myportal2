@@ -371,3 +371,34 @@ describe("readPageRepair", () => {
     ).rejects.toMatchObject({ kind: "schema" });
   });
 });
+
+describe("timeoutMs 인자", () => {
+  it("readPage에 timeoutMs를 넘기면 그 값이 chatJson의 시도당 timeout이 된다", async () => {
+    fetchMock.mockResolvedValueOnce(completion(validBody()));
+    await readPage({ outlineText: OUTLINE, pageUrl: PAGE, model: MODEL, timeoutMs: 25_000 });
+    expect(chatJsonMock.mock.calls[0][1].timeoutMs).toBe(25_000);
+  });
+
+  it("readPageRepair에도 timeoutMs가 전달된다", async () => {
+    fetchMock.mockResolvedValueOnce(completion(validBody()));
+    await readPageRepair({
+      outlineText: OUTLINE,
+      pageUrl: PAGE,
+      model: MODEL,
+      attempted: { itemSelector: "div.none", extractedTitles: [] },
+      timeoutMs: 18_000,
+    });
+    expect(chatJsonMock.mock.calls[0][1].timeoutMs).toBe(18_000);
+  });
+
+  it("readPageRepair도 생략하면 기본 40초다", async () => {
+    fetchMock.mockResolvedValueOnce(completion(validBody()));
+    await readPageRepair({
+      outlineText: OUTLINE,
+      pageUrl: PAGE,
+      model: MODEL,
+      attempted: { itemSelector: "div.none", extractedTitles: [] },
+    });
+    expect(chatJsonMock.mock.calls[0][1].timeoutMs).toBe(40_000);
+  });
+});

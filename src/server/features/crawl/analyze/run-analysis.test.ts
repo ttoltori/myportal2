@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { AnalyzeStep } from "@myportal/api-contracts";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hasLlm } from "../../../config/env";
 import { generateSpec } from "../extract";
 import { LlmError } from "../llm/llm-client";
@@ -215,43 +215,129 @@ describe("runAnalysis — LLM 경로", () => {
     expect(recordLlmCall).toHaveBeenCalledTimes(1);
   });
 
-  // maxDuration(120) − 보수 최악(40×2) − 꼬리 여유(10) = 30초가 마감이다.
-  it("분석 시작 후 30초가 지났으면 보수 호출을 건너뛰고 그 사실을 단계에 남긴다", async () => {
-    const args = argsFor(TABLE_HTML, { startedAt: Date.now() - 31_000 });
-    vi.mocked(readPage).mockResolvedValue(llmResult(goodRead(args.outline)));
-    rejectNextVerification();
+  // 시간 예산: 시도 timeout = clamp((120초 − 경과 − 꼬리 여유 10초) ÷ 2, 15초, 40초). 15초 미만이면 호출하지 않는다.
+  describe("시간 예산", () => {
+    const SEC = 1000;
+    const T0 = Date.parse("2026-11-01T00:00:00.000Z");
 
-    const r = await runAnalysis(args);
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(T0);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
 
-    expect(readPageRepair).not.toHaveBeenCalled();
-    expect(r.fieldSource).toBe("heuristic");
-    expect(stepOf(r.steps, "AI 재해석")).toMatchObject({ status: "warn" });
-    expect(stepOf(r.steps, "AI 재해석")?.detail).toContain("시간이 길어");
-  });
+    // 분석 시작 후 elapsedMs가 지난 시각으로 시계를 옮기고 그 시작 시각을 돌려준다.
+    function startedAgo(elapsedMs: number): number {
+      vi.setSystemTime(T0 + elapsedMs);
+      return T0;
+    }
 
-  it("시간 초과로 보수를 건너뛸 때 \"한 번 더 읽습니다\"라는 단계를 남기지 않는다", async () => {
-    const args = argsFor(TABLE_HTML, { startedAt: Date.now() - 31_000 });
-    vi.mocked(readPage).mockResolvedValue(llmResult(goodRead(args.outline)));
-    rejectNextVerification();
+    it("경과 시간이 짧으면 시도 timeout은 지금과 같은 40초다", async () => {
+      const args = argsFor(TABLE_HTML, { startedAt: startedAgo(5 * SEC) });
+      vi.mocked(readPage).mockResolvedValue(llmResult(goodRead(args.outline)));
 
-    const r = await runAnalysis(args);
+      await runAnalysis(args);
 
-    const verification = stepOf(r.steps, "셀렉터 합성·검증");
-    expect(verification?.detail).not.toContain("한 번 더 읽습니다");
-    expect(verification?.detail).toContain("패턴 추정으로 진행");
-    expect(r.steps.some((s) => s.detail?.includes("한 번 더 읽습니다"))).toBe(false);
-  });
+      expect(vi.mocked(readPage).mock.calls[0][0].timeoutMs).toBe(40 * SEC);
+    });
 
-  it("마감 안(29초 경과)이면 보수 호출을 한다", async () => {
-    const args = argsFor(TABLE_HTML, { startedAt: Date.now() - 29_000 });
-    vi.mocked(readPage).mockResolvedValue(llmResult(goodRead(args.outline)));
-    vi.mocked(readPageRepair).mockResolvedValue(llmResult(goodRead(args.outline)));
-    rejectNextVerification();
+    it("렌더링이 오래 걸려 경과 시간이 길면 시도 timeout이 남은 예산에 맞춰 줄어든다", async () => {
+      const args = argsFor(TABLE_HTML, { startedAt: startedAgo(60 * SEC) });
+      vi.mocked(readPage).mockResolvedValue(llmResult(goodRead(args.outline)));
 
-    const r = await runAnalysis(args);
+      await runAnalysis(args);
 
-    expect(readPageRepair).toHaveBeenCalledTimes(1);
-    expect(r.fieldSource).toBe("llm");
+      // (120 − 60 − 10) ÷ 2 = 25초
+      expect(vi.mocked(readPage).mock.calls[0][0].timeoutMs).toBe(25 * SEC);
+    });
+
+    it("하한(15초) 경계에서는 호출하고, 그보다 부족하면 호출하지 않는다", async () => {
+      const atFloor = argsFor(TABLE_HTML, { startedAt: startedAgo(80 * SEC) });
+      vi.mocked(readPage).mockResolvedValue(llmResult(goodRead(atFloor.outline)));
+      await runAnalysis(atFloor);
+      // (120 − 80 − 10) ÷ 2 = 15초
+      expect(vi.mocked(readPage).mock.calls[0][0].timeoutMs).toBe(15 * SEC);
+
+      vi.mocked(readPage).mockClear();
+      const belowFloor = argsFor(TABLE_HTML, { startedAt: startedAgo(80 * SEC + 2) });
+      await runAnalysis(belowFloor);
+      expect(readPage).not.toHaveBeenCalled();
+    });
+
+    it("남은 예산이 하한 미만이면 readPage를 호출하지 않고 폴백하며 시간 부족 단계를 남긴다", async () => {
+      const args = argsFor(TABLE_HTML, { startedAt: startedAgo(90 * SEC) });
+
+      const r = await runAnalysis(args);
+
+      expect(readPage).not.toHaveBeenCalled();
+      expect(recordLlmCall).not.toHaveBeenCalled();
+      expect(generateSpec).toHaveBeenCalledTimes(1);
+      expect(r.fieldSource).toBe("heuristic");
+      expect(stepOf(r.steps, "AI 페이지 해석")).toMatchObject({
+        status: "warn",
+        detail: "분석 시간이 길어 AI 해석을 건너뛰었습니다 — 패턴 추정으로 진행",
+      });
+    });
+
+    it("시간 부족 단계는 미설정·한도 초과 단계와 문구가 구분된다", async () => {
+      vi.mocked(hasLlm).mockReturnValue(false);
+      const notConfigured = await runAnalysis(argsFor(TABLE_HTML, { startedAt: startedAgo(90 * SEC) }));
+
+      // 미설정이 먼저 가려진다: 시간이 없어도 "시간이 길어"라고 말하지 않는다.
+      expect(stepOf(notConfigured.steps, "AI 페이지 해석")?.detail).toContain("설정되지 않았습니다");
+      expect(stepOf(notConfigured.steps, "AI 페이지 해석")?.detail).not.toContain("시간이 길어");
+    });
+
+    it("보수 호출도 첫 호출이 끝난 시점의 남은 예산으로 시도 timeout을 정한다", async () => {
+      const args = argsFor(TABLE_HTML, { startedAt: startedAgo(0) });
+      // 첫 호출이 50초 걸렸다고 치고 시계를 옮긴다.
+      vi.mocked(readPage).mockImplementation(async () => {
+        vi.setSystemTime(T0 + 50 * SEC);
+        return llmResult(goodRead(args.outline));
+      });
+      vi.mocked(readPageRepair).mockResolvedValue(llmResult(goodRead(args.outline)));
+      rejectNextVerification();
+
+      await runAnalysis(args);
+
+      expect(vi.mocked(readPage).mock.calls[0][0].timeoutMs).toBe(40 * SEC);
+      // (120 − 50 − 10) ÷ 2 = 30초
+      expect(vi.mocked(readPageRepair).mock.calls[0][0].timeoutMs).toBe(30 * SEC);
+    });
+
+    it("첫 호출이 오래 걸려 남은 예산이 하한 미만이면 보수를 건너뛰고 그 사실을 단계에 남긴다", async () => {
+      const args = argsFor(TABLE_HTML, { startedAt: startedAgo(0) });
+      vi.mocked(readPage).mockImplementation(async () => {
+        vi.setSystemTime(T0 + 85 * SEC);
+        return llmResult(goodRead(args.outline));
+      });
+      rejectNextVerification();
+
+      const r = await runAnalysis(args);
+
+      expect(readPageRepair).not.toHaveBeenCalled();
+      expect(r.fieldSource).toBe("heuristic");
+      expect(stepOf(r.steps, "AI 재해석")).toMatchObject({ status: "warn" });
+      expect(stepOf(r.steps, "AI 재해석")?.detail).toContain("시간이 길어");
+    });
+
+    it("시간 초과로 보수를 건너뛸 때 \"한 번 더 읽습니다\"라는 단계를 남기지 않는다", async () => {
+      const args = argsFor(TABLE_HTML, { startedAt: startedAgo(0) });
+      vi.mocked(readPage).mockImplementation(async () => {
+        vi.setSystemTime(T0 + 85 * SEC);
+        return llmResult(goodRead(args.outline));
+      });
+      rejectNextVerification();
+
+      const r = await runAnalysis(args);
+
+      const verification = stepOf(r.steps, "셀렉터 합성·검증");
+      expect(verification?.detail).not.toContain("한 번 더 읽습니다");
+      expect(verification?.detail).toContain("패턴 추정으로 진행");
+      expect(r.steps.some((s) => s.detail?.includes("한 번 더 읽습니다"))).toBe(false);
+    });
   });
 
   it("보수가 가능한 경로의 첫 단계 문구는 \"한 번 더 읽습니다\"다", async () => {

@@ -12,6 +12,7 @@ import { checkLlmQuota, recordLlmCall, type LlmPurpose } from "../llm/usage";
 import { absolutize } from "../url";
 import {
   hintMatchesOutline,
+  READ_TIMEOUT_MS,
   readPage,
   readPageRepair,
   type LlmModelConfig,
@@ -84,27 +85,45 @@ const MSG = {
   synthesisFailed: `AI가 읽은 항목을 셀렉터로 옮길 수 없었습니다${FALLBACK_SUFFIX}`,
   verificationFailed: `추출 결과가 AI가 읽은 내용과 달랐습니다${FALLBACK_SUFFIX}`,
   retrying: "추출 결과가 AI가 읽은 내용과 달라 한 번 더 읽습니다",
+  readSkippedForTime: `분석 시간이 길어 AI 해석을 건너뛰었습니다${FALLBACK_SUFFIX}`,
   repairSkippedForTime: `분석 시간이 길어 재해석을 건너뛰었습니다${FALLBACK_SUFFIX}`,
   emptyPage: `페이지에서 읽을 내용을 찾지 못했습니다${FALLBACK_SUFFIX}`,
   hintMissing: "힌트 문자열이 현재 페이지에 없습니다 — 목록 내용이 바뀐 것 같습니다",
   listNotFound: "반복 목록을 찾지 못함",
 } as const;
 
-// 보수 호출을 시작해도 되는 마감(분석 시작 후 경과 ms). 이 값은 라우트의 maxDuration에서 역산한다:
-//   마감 = maxDuration − 보수 호출 최악 소요 − 꼬리 여유
-//        = 120초 − (시도 timeout 40초 × chatJson 최대 시도 2회 = 80초) − 10초 = 30초
-// 마감 직전(30초)에 시작한 보수가 최악(80초)까지 걸려도 110초에 끝나고, 남은 10초가
-// 프로파일 계산과 응답 직렬화를 받친다. 플랫폼이 중간에 끊으면 폴백도 못 타고 응답 자체가
-// 없어 가장 나쁜 실패이므로, 마감 판정은 이 산술을 어기지 않아야 한다.
-// 라우트(src/app/api/[...path]/route.ts)는 어댑터 계층이라 import하지 않고 값을 여기 옮겨
-// 적는다. maxDuration, llm-read.ts의 TIMEOUT_MS, chatJson의 시도 횟수 중 하나를 바꾸면
-// 아래 상수도 같이 바꿔야 한다.
+// ── 시간 예산 ──
+// 한 요청은 플랫폼의 maxDuration(src/app/api/[...path]/route.ts) 안에 끝나야 한다. 넘기면
+// 플랫폼이 중간에 끊어 폴백도 못 타고 응답 자체가 없는데, 이것이 가장 나쁜 실패다.
+// LLM 앞단의 최악 소요는 고정할 수 없다: fetchPage 15초 + 브라우저 기동 + 렌더링
+// (render.ts: goto 30 + networkidle 6 + SPA 대기 1 + networkidle 6 + 안정화 8 ≈ 51초) 이고,
+// 거기에 chatJson의 최대 2시도 × 시도 timeout이 더해진다. 최악을 다 더하면
+// 15 + 51 + 80 = 146초로 120초를 넘는다. 그렇다고 마감을 고정값으로 조이면 느리게 렌더링되는
+// 사이트(이번 작업의 주 대상인 JS 목록 사이트)가 LLM 분석을 아예 못 받는다.
+// 그래서 호출 직전에 남은 시간으로 시도 timeout을 정한다 (첫 호출과 보수 호출 모두):
+//   남은 예산    = PLATFORM_MAX_DURATION_MS − (지금 − 분석 시작) − TAIL_MARGIN_MS
+//   시도 timeout = clamp(남은 예산 ÷ LLM_MAX_ATTEMPTS, MIN_ATTEMPT_TIMEOUT_MS, READ_TIMEOUT_MS)
+//   시도 timeout이 하한 미만이면 호출하지 않고 폴백한다.
+// 호출의 최악 소요(시도 timeout × 2회)가 남은 예산 이하라서 합계가 구조적으로 한도 안에 들어간다.
+// 숫자를 손으로 맞추는 것이 아니다. 꼬리 여유는 호출 뒤의 합성·검증·프로파일 계산과 응답 몫이다.
+// PLATFORM_MAX_DURATION_MS는 라우트의 maxDuration과 같은 값이어야 한다. 라우트는 어댑터 계층이라
+// import하지 않고 옮겨 적었으므로 한쪽을 바꾸면 다른 쪽도 바꾼다. LLM_MAX_ATTEMPTS는 chatJson의
+// 스키마 시도 횟수(MAX_SCHEMA_ATTEMPTS)와 같아야 한다.
 const PLATFORM_MAX_DURATION_MS = 120_000;
-const LLM_ATTEMPT_TIMEOUT_MS = 40_000;
 const LLM_MAX_ATTEMPTS = 2;
 const TAIL_MARGIN_MS = 10_000;
-const REPAIR_DEADLINE_MS =
-  PLATFORM_MAX_DURATION_MS - LLM_ATTEMPT_TIMEOUT_MS * LLM_MAX_ATTEMPTS - TAIL_MARGIN_MS;
+// 하한 근거: 48KB 개요를 읽고 항목 12개 x 필드 12개까지의 JSON(최대 8k토큰)을 쓰는 응답이
+// 현실적으로 끝나는 최소선이다. 이보다 짧게 잡으면 첫 시도가 거의 확실히 timeout되어
+// 일별 한도만 소비하고 폴백으로 가므로, 그럴 바에는 호출하지 않는 편이 낫다.
+const MIN_ATTEMPT_TIMEOUT_MS = 15_000;
+
+// 지금 호출한다면 시도당 timeout(ms). 예산이 부족해 호출하면 안 되면 null.
+function attemptTimeoutMs(startedAt: number): number | null {
+  const remaining = PLATFORM_MAX_DURATION_MS - (Date.now() - startedAt) - TAIL_MARGIN_MS;
+  const perAttempt = Math.floor(remaining / LLM_MAX_ATTEMPTS);
+  if (perAttempt < MIN_ATTEMPT_TIMEOUT_MS) return null;
+  return Math.min(perAttempt, READ_TIMEOUT_MS);
+}
 
 // 보수 호출에 알려 줄 추출 제목 수. llm-read가 앞쪽 3건만 쓰므로 그만큼만 넘긴다.
 const REPAIR_SAMPLE_TITLES = 3;
@@ -313,6 +332,7 @@ async function repairRead(
   ctx: LlmContext,
   steps: AnalyzeStep[],
   rejected: Extract<Attempt, { status: "rejected" }>,
+  timeoutMs: number,
 ): Promise<PageReadResult | null> {
   const read = await callLlm(ctx, () =>
     readPageRepair({
@@ -320,6 +340,7 @@ async function repairRead(
       pageUrl: args.pageUrl,
       hint: args.hint,
       model: ctx.model,
+      timeoutMs,
       attempted: {
         itemSelector: rejected.spec.itemSelector ?? "",
         extractedTitles: rejected.rows.slice(0, REPAIR_SAMPLE_TITLES).map((r) => r.title),
@@ -353,6 +374,8 @@ async function runLlmPath(
 ): Promise<LlmPathResult> {
   // 개요가 비면(빈 문서, 차단 페이지) 모델에게 보여 줄 것이 없다. 호출하면 한도만 소비하고,
   // 모델이 "목록 없음"으로 답해 사용자가 원인을 상세 페이지로 오해하게 된다.
+  // 본문은 비었어도 링크 구역만 있는 개요는 비었다고 보지 않는다: 목록으로 가는 링크를
+  // listCandidates로 짚는 일은 LLM만 할 수 있고 폴백 휴리스틱은 못 한다.
   if (args.outline.text.trim() === "") {
     steps.push(step(LABEL.read, "warn", MSG.emptyPage));
     return NO_LLM_RESULT;
@@ -360,12 +383,19 @@ async function runLlmPath(
   const ctx = await prepareLlm(args, steps);
   if (!ctx) return NO_LLM_RESULT;
 
+  // 설정·한도 사유를 먼저 가린 뒤에 시간을 본다. 안 그러면 미설정인데 "시간이 길어"라고 말하게 된다.
+  const firstTimeout = attemptTimeoutMs(startedAt);
+  if (firstTimeout === null) {
+    steps.push(step(LABEL.read, "warn", MSG.readSkippedForTime));
+    return NO_LLM_RESULT;
+  }
   const first = await callLlm(ctx, () =>
     readPage({
       outlineText: outlineTextFor(args.outline),
       pageUrl: args.pageUrl,
       hint: args.hint,
       model: ctx.model,
+      timeoutMs: firstTimeout,
     }),
   );
   if (!first) {
@@ -378,20 +408,21 @@ async function runLlmPath(
   const attempt = synthesizeAndVerify(args, first);
   // 합성 자체가 안 된 경우에는 시도한 셀렉터가 없어 보수 호출로 알려 줄 것이 없다.
   const repairWanted = attempt.status === "rejected" && args.allowRepair !== false;
-  const outOfTime = Date.now() - startedAt > REPAIR_DEADLINE_MS;
-  // 시간 판정은 첫 단계 문구를 정하기 전에 끝낸다. 그렇지 않으면 "한 번 더 읽습니다"를 남긴 직후
-  // "건너뛰었습니다"가 이어져 사용자에게 보이는 로그가 모순된다.
-  const canRepair = repairWanted && !outOfTime;
-  pushAttemptSteps(steps, attempt, canRepair);
-  if (repairWanted && outOfTime) steps.push(step(LABEL.reread, "warn", MSG.repairSkippedForTime));
+  // 보수는 첫 호출이 끝난 지금 시점의 남은 예산으로 다시 계산한다. 판정은 첫 단계 문구를 정하기 전에
+  // 끝낸다. 그렇지 않으면 "한 번 더 읽습니다"를 남긴 직후 "건너뛰었습니다"가 이어져 로그가 모순된다.
+  const repairTimeout = repairWanted ? attemptTimeoutMs(startedAt) : null;
+  pushAttemptSteps(steps, attempt, repairTimeout !== null);
+  if (repairWanted && repairTimeout === null) {
+    steps.push(step(LABEL.reread, "warn", MSG.repairSkippedForTime));
+  }
   if (attempt.status === "accepted") {
     return { read: first, accepted: { spec: attempt.spec, rows: attempt.rows }, judgedNoList: false };
   }
-  if (attempt.status !== "rejected" || !canRepair) {
+  if (attempt.status !== "rejected" || repairTimeout === null) {
     return { read: first, accepted: null, judgedNoList: false };
   }
 
-  const second = await repairRead(args, ctx, steps, attempt);
+  const second = await repairRead(args, ctx, steps, attempt, repairTimeout);
   if (!second) return { read: first, accepted: null, judgedNoList: false };
 
   const retry = synthesizeAndVerify(args, second);
