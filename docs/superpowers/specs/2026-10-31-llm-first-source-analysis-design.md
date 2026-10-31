@@ -312,7 +312,9 @@ export function synthesizeSpec(
 4. **필드 셀렉터 생성.** 각 필드 ref 요소에 대해, 소속 항목 루트 기준 상대 셀렉터를 만든다(`dom-selector.ts`의 `relativeSelector(root, el)`). 항목마다 뽑은 상대 셀렉터가 전부 같으면 그대로, 다르면 공통 접미(`.date`, `td:nth-child(4)` 등)로 일반화한다. 일반화도 실패하면 버린다.
 5. **값 추출 방식 결정.** 요소가 앵커이고 필드 `type`이 `url`이면 `attr: "href"`, 이미지면 `attr: "src"`, `<time datetime>`이면 `attr: "datetime"`, 그 외는 텍스트.
 6. **제목·링크·게시일 고정 역할 처리.** `title`/`link`/`published`는 `CrawlSpec.fields`에 넣지 않는다 — `applyDomSpec`이 이미 담당한다. 다만 제목 상대 셀렉터가 `applyDomSpec`의 앵커 추측과 어긋날 수 있으므로, `spec.titleSelector`/`spec.linkSelector`/`spec.publishedSelector`를 **새로 추가**해 명시적으로 지정한다. `applyDomSpec`은 이 값이 있으면 그것을 쓰고, 없으면 기존 추측을 유지한다(기존 소스 호환).
-7. `key`가 `title`/`link`/`published`인 필드와 `role`이 그 셋인 필드는 버린다(고정 역할과 충돌).
+7. `key`가 `title`/`link`/`published`인 필드는 버린다(고정 역할과 충돌). `role`에 대한 처리는 역할마다 다르다.
+   - `role: "published"`인 필드는 **버리지 않고 `spec.publishedSelector`로 승격**한다. LLM 응답 스키마에 `publishedRef`가 없으므로(§5-3) 게시일 노드가 전달되는 경로는 이 필드뿐이다. 버리면 `publishedSelector`에 도달할 방법이 아예 없어지고, 게시일은 영구히 "항목 전체 텍스트에서 첫 날짜"라는 추측에 남는다. 승격한 뒤에는 `spec.fields`에 넣지 않는다 — 넣으면 고정 `published` 컬럼과 `attrs`에 같은 값이 두 번 들어간다.
+   - `role: "title"` / `role: "link"`인 필드는 버린다. 그 둘은 `titleRef`/`linkRef`로 이미 전달되므로 필드로 중복될 이유가 없다.
 
 반환값이 `null`이면 합성 실패 — 호출자가 폴백 경로를 탄다.
 
