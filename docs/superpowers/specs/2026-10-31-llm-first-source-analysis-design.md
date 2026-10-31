@@ -97,9 +97,9 @@ analyzeListing({ userId, url, hint, sourceId, purpose })
   3. ★ 렌더링: renderPage(url, profileHint?)
        → { html, finalUrl, timings }  로딩 완료 판정·측정
   4. ★ 페이지 개요 생성: buildPageOutline(renderedHtml)
-       → { outline: string, refs: Element[] }
+       → { outline: string, refs: Element[] }   stripNoise 적용 DOM 기준
   5. ★ LLM 해석: readPage(outline, hint?)
-       → { pageKind, pageTitle, items[], listCandidateRefs?, suggested }
+       → { pageKind, pageTitle, items[], listCandidates?, suggested }
   6. ★ 셀렉터 합성: synthesizeSpec(html, refs, llmResult)
        → CrawlSpec { strategy:"html", itemSelector, fields }
   7. ★ 검증: verifySpec(html, pageUrl, spec, llmResult)
@@ -207,9 +207,19 @@ export function buildPageOutline(html: string): PageOutline;
       [17] "한국데이터산업진흥원"
 ```
 
+**개요는 `stripNoise`를 적용한 문서에서 만든다.** `applySpec`이 추출 전에 `stripNoise(document)`로 `nav`/`header`/`footer`/`aside`/노이즈 클래스 컨테이너를 제거하기 때문이다. 원본 DOM에서 번호를 붙이면 LLM이 가리킨 노드가 추출 시점에는 존재하지 않아, 합성한 셀렉터가 0건을 뽑고 검증에서 폐기된다. **ref 공간과 `applySpec`이 보는 DOM이 같아야 한다**는 것이 이 단계의 불변식이다.
+
+그러면 상세 페이지에서 목록으로 가는 링크(보통 `nav`에 있다)를 잃는다. 이것만 따로 챙긴다: 개요 끝에 **원본 문서**의 앵커를 최대 40개까지 `라벨 → URL` 텍스트로 덧붙인다. 이 구역에는 번호를 붙이지 않는다 — 셀렉터 합성에 쓰이지 않고 부모 목록 후보 URL을 고르는 데만 쓰이므로, 두 번째 ref 공간을 만들 이유가 없다.
+
+```text
+── 페이지 내 링크 (목록 후보 판단용) ──
+사업공고 → /notice/list.it
+알림마당 → /board/index.it
+```
+
 규칙:
 
-- `script`/`style`/`svg`/`noscript`/`iframe` 제거. `header`/`nav`/`footer`/`aside`는 **남긴다** — 상세 페이지에서 목록으로 가는 링크가 거기 있을 수 있고, LLM이 "이건 메뉴다"를 판단할 수 있다. 대신 역할을 표시한다(`<nav>` 같은 랜드마크는 `~nav` 접두로 표기).
+- `stripNoise` 적용 후 `svg` 추가 제거(`stripNoise`는 `svg`를 지우지 않는다).
 - 텍스트 노드는 공백 정규화 후 `TEXT_NODE_LIMIT`(120자)로 절단. 빈 노드는 번호를 받지 않는다.
 - 앵커는 `a→경로 "텍스트"` 형태로 href를 함께 보인다(쿼리 포함, 길면 절단). LLM이 항목 링크와 메뉴 링크를 구분하는 핵심 단서다.
 - `img`는 `img→src "alt"`로 표기(필드 role=image 후보).
@@ -237,7 +247,10 @@ const pageReadResponseSchema = z.object({
       text: z.string().max(500),           // ref 검증·폴백 매칭용
     })).max(12),
   })).max(12),
-  listCandidateRefs: z.array(z.number().int().positive()).max(5).optional(),
+  listCandidates: z.array(z.object({
+    label: z.string().max(60),
+    url: z.string().max(2048),
+  })).max(5).optional(),
   suggested: z.object({
     displayName: z.string().max(200),
     categoryPath: z.array(z.string().max(60)).max(3),
@@ -255,7 +268,7 @@ const pageReadResponseSchema = z.object({
 - 각 항목에서 제목·링크와, 그 목록에 **실제로 있는** 메타 정보만 보고한다. 없는 필드를 추측해 만들지 않는다.
 - 값은 반드시 `[n]` 번호로 가리키고, 번호와 함께 그 번호의 텍스트를 그대로 적는다. 개요에 없는 번호는 쓰지 않는다.
 - 접수기간처럼 시작·종료가 한 문자열이면 `type: "date_range"`, `role: "deadline"`.
-- 목록이 보이지 않으면 `pageKind: "detail"` 또는 `"unknown"`으로 답하고, 페이지 안에서 목록으로 이어질 링크 번호를 `listCandidateRefs`에 담는다.
+- 목록이 보이지 않으면 `pageKind: "detail"` 또는 `"unknown"`으로 답하고, 개요 끝의 링크 구역에서 목록으로 이어질 것을 골라 `listCandidates`에 담는다.
 - `suggested`에는 이 소스의 표시 이름과, 한국어 카테고리 경로·태그를 제안한다.
 
 힌트가 있으면 프롬프트에 한 줄 덧붙이고, 개요에서 매칭된 줄에 표시를 남긴다.
@@ -539,6 +552,7 @@ alter table myportal.sources
 | 항상 렌더링해서 분석이 느려진다 | 정적 페이지도 +2~4초. 요건 목표(렌더링 필요 60초) 안. 반대로 정기 수집은 `waitForSelector` 조기 종료로 빨라진다. |
 | Vercel에서 Chromium 실행 실패 | 기존 `resolveLaunch` 폴백 체인(시스템 Chrome → `@sparticuz/chromium` → playwright 번들) 유지. 렌더링 실패 시 정적 HTML로 LLM 해석을 진행한다(렌더링을 **보장**하지 못한 사실을 단계에 `warn`으로 남긴다). |
 | LLM 비용 증가 | 분석 1건당 1~2회, 입력 10~20k 토큰. 기존 일별 한도(`LLM_DAILY_LIMIT` 50 / 시스템 200)와 `llm_calls` 기록 그대로. 정기 수집은 0회 유지. |
+| 개요 ref와 `applySpec`이 보는 DOM이 어긋난다 | 개요를 `stripNoise` 적용 문서에서 만들어 불변식으로 고정(§5-2). `page-outline` 테스트가 `nav` 안의 노드에 번호가 붙지 않음을 확인한다. |
 | `gpt-4o-mini`가 번호 참조를 못 따라온다 | 값 매칭 폴백으로 1차 방어. `remapped` 비율이 높게 나오면 모델 분리를 별건으로 다룬다(이 설계의 비목표). |
 
 ## 13. 요건정의서 반영
