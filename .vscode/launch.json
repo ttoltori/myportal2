@@ -2,13 +2,33 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Next.js dev (3001)",
+      // pnpm dev가 띄우는 Next.js 서버(= Hono API, 분석·수집 코드 전부)에 디버거를 붙인다.
+      // node-terminal은 터미널에서 시작한 node 자식 프로세스에 자동으로 attach한다.
+      // type: "node" + runtimeExecutable: pnpm 조합은 Next.js가 워커 프로세스를 따로 띄워
+      // src/server/ 의 중단점이 걸리지 않는다.
+      "name": "Next.js 서버사이드 디버깅 (pnpm dev, 3001)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "pnpm dev",
+      "cwd": "${workspaceFolder}",
+      "serverReadyAction": {
+        "pattern": "http://localhost:([0-9]+)",
+        "uriFormat": "http://localhost:%s",
+        "action": "openExternally"
+      }
+    },
+    {
+      // URL 하나를 소스 등록 화면과 같은 경로로 분석한다 (DB 저장 없음, LLM은 실제 호출).
+      // 중단점은 src/server/features/crawl/analyze/ 아래에 건다.
+      "name": "분석 디버깅: URL 하나 (analyze:url)",
       "type": "node",
       "request": "launch",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["dev"],
+      "runtimeArgs": ["analyze:url", "${input:analyzeUrl}"],
       "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**"]
     },
     {
       "name": "crawl-tick (once)",
@@ -17,7 +37,9 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["crawl:once"],
       "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**"]
     },
     {
       "name": "db:migrate",
@@ -29,13 +51,24 @@
       "console": "integratedTerminal"
     },
     {
-      "name": "vitest current file",
+      // 편집기에 열려 있는 테스트 파일 하나만 vitest로 실행한다.
+      "name": "vitest 단일 파일 디버깅",
       "type": "node",
       "request": "launch",
       "program": "${workspaceFolder}/node_modules/vitest/vitest.mjs",
-      "args": ["run", "${file}"],
+      "args": ["run", "${relativeFile}"],
       "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "smartStep": true,
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "analyzeUrl",
+      "type": "promptString",
+      "description": "분석할 목록 페이지 URL"
     }
   ]
 }

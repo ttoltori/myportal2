@@ -13,7 +13,8 @@
     "db:migrate": "tsx src/server/scripts/migrate.ts",
     "db:seed": "tsx src/server/scripts/seed.ts",
     "crawl:once": "tsx src/server/scripts/crawl-tick.ts",
-    "crawl:watch": "tsx src/server/scripts/crawl-tick.ts --watch"
+    "crawl:watch": "tsx src/server/scripts/crawl-tick.ts --watch",
+    "analyze:url": "tsx src/server/scripts/analyze-url.ts"
   },
   "dependencies": {
     "@myportal/api-contracts": "workspace:*",
