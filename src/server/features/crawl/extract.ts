@@ -27,6 +27,18 @@ export interface CrawlSpec {
   render?: boolean;
   // fields 맵의 출처. UI 배지와 운영 추적용.
   fieldSource?: "llm" | "heuristic";
+  // 항목(itemSelector) 기준 상대 셀렉터. LLM이 가리킨 노드에서 역산한 값이라
+  // 앵커 텍스트 길이로 제목을 추측하는 것보다 우선한다. 없거나 항목에서
+  // 매칭되지 않으면 기존 추측 경로로 폴백한다 — 이 필드가 없는 기존 소스의
+  // 수집 결과는 바뀌면 안 된다.
+  titleSelector?: string;
+  // 매칭된 요소의 href를 링크로 쓴다. 값이 비었거나 절대화할 수 없으면 폴백.
+  linkSelector?: string;
+  // 매칭된 요소의 datetime 속성 또는 텍스트에서만 날짜를 찾는다.
+  // 항목 전체 텍스트의 다른 날짜(마감일 등)가 섞이는 것을 막기 위함.
+  publishedSelector?: string;
+  // hint를 입력한 시각(ISO 8601). 저장된 힌트가 낡았는지 사용자에게 알리는 데 쓴다.
+  hintSetAt?: string;
 }
 
 export interface ExtractedRow {
@@ -442,8 +454,8 @@ function stripNoise(document: Document): void {
   }
 }
 
-// 앵커의 제목 텍스트. 배지/아이콘 계열 자식 요소의 텍스트는 제외한다.
-function anchorTitle(a: HTMLAnchorElement): string {
+// 앵커(또는 LLM이 가리킨 제목 요소)의 텍스트. 배지/아이콘 계열 자식 요소의 텍스트는 제외한다.
+function anchorTitle(a: Element): string {
   let out = "";
   const walk = (node: ChildNode) => {
     if (node.nodeType === 3) {
@@ -590,6 +602,43 @@ export function parseDate(raw: string): string | null {
 }
 
 
+// 저장된 셀렉터가 문법 오류여도 수집 전체가 죽으면 안 되므로 '매칭 없음'으로 취급한다.
+function queryWithin(el: Element, selector: string | undefined): Element | null {
+  if (!selector) return null;
+  try {
+    return el.querySelector(selector);
+  } catch {
+    return null;
+  }
+}
+
+function explicitTitle(el: Element, selector: string | undefined): string {
+  const target = queryWithin(el, selector);
+  return target ? anchorTitle(target).slice(0, 300) : "";
+}
+
+function explicitLink(
+  el: Element,
+  selector: string | undefined,
+  pageUrl: string,
+): string | null {
+  const href = queryWithin(el, selector)?.getAttribute("href") ?? "";
+  return href ? absolutize(href, pageUrl) : null;
+}
+
+// 명시 셀렉터가 가리킨 요소에서 날짜를 읽는다. 요소가 있고 값이 있으면
+// 파싱 실패여도 null을 돌려준다(undefined와 구분) — 전체 텍스트로 폴백하면
+// 마감일 같은 엉뚱한 날짜를 게시일로 집을 수 있다.
+function explicitPublished(
+  el: Element,
+  selector: string | undefined,
+): string | null | undefined {
+  const target = queryWithin(el, selector);
+  if (!target) return undefined;
+  const raw = (target.getAttribute("datetime") ?? target.textContent ?? "").trim();
+  return raw ? parseDate(raw) : undefined;
+}
+
 function applyDomSpec(
   document: Document,
   spec: CrawlSpec,
@@ -606,24 +655,27 @@ function applyDomSpec(
   const rows: ExtractedRow[] = [];
   for (const el of items.slice(0, 100)) {
     const anchor = pickMainAnchor(el);
-    let title: string;
-    let link: string | null;
+    let title = explicitTitle(el, spec.titleSelector);
+    let link = explicitLink(el, spec.linkSelector, pageUrl);
     if (anchor) {
-      title = anchorTitle(anchor);
-      link = absolutize(anchor.getAttribute("href") ?? "", pageUrl);
+      title ||= anchorTitle(anchor);
+      link ??= absolutize(anchor.getAttribute("href") ?? "", pageUrl);
     } else {
       // 앵커 없는 JS 클릭 목록 항목 — 제목 후보와 data-* 기반 링크 복원.
-      title = pickTitleText(el);
+      title ||= pickTitleText(el);
       if (!title) continue;
-      link = deriveItemLink(el, linkTemplates, pageUrl);
+      link ??= deriveItemLink(el, linkTemplates, pageUrl);
     }
-    const timeEl = el.querySelector("time");
-    const dateRaw =
-      timeEl?.getAttribute("datetime") ??
-      timeEl?.textContent ??
-      el.textContent ??
-      "";
-    const publishedAt = parseDate(dateRaw);
+    let publishedAt = explicitPublished(el, spec.publishedSelector);
+    if (publishedAt === undefined) {
+      const timeEl = el.querySelector("time");
+      const dateRaw =
+        timeEl?.getAttribute("datetime") ??
+        timeEl?.textContent ??
+        el.textContent ??
+        "";
+      publishedAt = parseDate(dateRaw);
+    }
     const attrs: Record<string, unknown> = {};
     // 스펙의 추가 필드 적용
     for (const [key, fs] of Object.entries(spec.fields ?? {})) {

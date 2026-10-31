@@ -202,6 +202,7 @@ describe("analyzeUrl", () => {
       vi.mocked(renderPage).mockResolvedValue({
         finalUrl: RENDERED_URL,
         html: RENDERED_HTML,
+        timings: { readyMs: 1000, readyBy: "stabilized", grewByScroll: false },
       });
     });
 
@@ -299,6 +300,7 @@ describe("analyzeListing", () => {
     vi.mocked(renderPage).mockResolvedValue({
       finalUrl: "https://www.sbiz24.kr/#/combinePbancList",
       html: RENDERED_HTML,
+      timings: { readyMs: 1000, readyBy: "stabilized", grewByScroll: false },
     });
     vi.mocked(enrichWithLlm).mockResolvedValue(
       enrichOk(rescueSpec(), makeRows(24)),

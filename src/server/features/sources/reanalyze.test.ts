@@ -356,6 +356,7 @@ describe("applySpecForSource", () => {
     vi.mocked(renderPage).mockResolvedValue({
       finalUrl: SOURCE_URL,
       html: "<html>rendered</html>",
+      timings: { readyMs: 1000, readyBy: "stabilized", grewByScroll: false },
     });
     vi.mocked(extractRows).mockResolvedValue(rows);
   });

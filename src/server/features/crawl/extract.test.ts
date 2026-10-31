@@ -400,6 +400,110 @@ describe("fields 메타가 있는 스펙", () => {
   });
 });
 
+describe("명시적 제목·링크·게시일 셀렉터", () => {
+  const pageUrl = "https://x.kr/list";
+  // 긴 앵커(요약 링크)와 짧은 제목 앵커가 한 항목에 공존한다 — 기존 추측은 긴 쪽을 고른다.
+  const row = (i: number) => `<li class="row">
+      <a class="more" href="/more/${i}">자세히 보기 및 신청 안내 페이지로 이동합니다 ${i}</a>
+      <a class="subject" href="/v/${i}">공모전 ${i}</a>
+      <span class="date">2026-01-0${i}</span>
+      <span class="due">마감 2026-12-31</span>
+    </li>`;
+  const html = `<html><body><ul>${[1, 2, 3].map(row).join("")}</ul></body></html>`;
+  const base: CrawlSpec = { strategy: "html", itemSelector: "li.row" };
+
+  it("titleSelector가 있으면 그 요소의 텍스트를 제목으로 쓴다", () => {
+    const rows = applySpec(html, { ...base, titleSelector: ".subject" }, pageUrl);
+    expect(rows.map((r) => r.title)).toEqual(["공모전 1", "공모전 2", "공모전 3"]);
+  });
+
+  it("linkSelector가 있으면 그 요소의 href를 절대 URL로 링크에 쓴다", () => {
+    const rows = applySpec(html, { ...base, linkSelector: ".subject" }, pageUrl);
+    expect(rows[0].link).toBe("https://x.kr/v/1");
+    // 제목은 지정하지 않았으므로 기존 추측(가장 긴 앵커)이 그대로다.
+    expect(rows[0].title).toContain("자세히 보기");
+  });
+
+  it("publishedSelector가 있으면 그 요소에서만 날짜를 찾는다", () => {
+    const rows = applySpec(html, { ...base, publishedSelector: ".date" }, pageUrl);
+    expect(rows[0].publishedAt).toContain("2026-01-01");
+    // .due를 가리키면 항목 전체 텍스트의 다른 날짜(.date)는 영향을 주지 않는다.
+    // '마감 2026-12-31'은 정규식 경로로 파싱돼 로컬 자정이므로 같은 방식으로 기대값을 만든다.
+    const due = applySpec(html, { ...base, publishedSelector: ".due" }, pageUrl);
+    expect(due[0].publishedAt).toBe(new Date(2026, 11, 31).toISOString());
+  });
+
+  it("publishedSelector 요소의 datetime 속성을 텍스트보다 우선한다", () => {
+    const h = `<html><body><ul><li class="row"><a href="/v/1">공모전 제목 하나입니다</a>
+      <time datetime="2026-05-05">5월 5일</time><span class="due">2026-12-31</span></li></ul></body></html>`;
+    const rows = applySpec(h, { ...base, publishedSelector: "time" }, pageUrl);
+    expect(rows[0].publishedAt).toContain("2026-05-05");
+  });
+
+  it("titleSelector가 매칭되지 않는 항목은 기존 앵커 추측으로 폴백한다", () => {
+    const rows = applySpec(html, { ...base, titleSelector: ".nope" }, pageUrl);
+    expect(rows[0].title).toContain("자세히 보기");
+    expect(rows[0].link).toBe("https://x.kr/more/1");
+  });
+
+  it("linkSelector·publishedSelector가 매칭되지 않으면 기존 경로로 폴백한다", () => {
+    const rows = applySpec(
+      html,
+      { ...base, linkSelector: ".nope", publishedSelector: ".nope" },
+      pageUrl,
+    );
+    expect(rows[0].link).toBe("https://x.kr/more/1");
+    expect(rows[0].publishedAt).toBe(applySpec(html, base, pageUrl)[0].publishedAt);
+    expect(rows[0].publishedAt).not.toBeNull();
+  });
+
+  it("문법이 틀린 셀렉터는 예외 없이 폴백한다", () => {
+    const rows = applySpec(
+      html,
+      {
+        ...base,
+        titleSelector: "[[[",
+        linkSelector: "[[[",
+        publishedSelector: "[[[",
+      },
+      pageUrl,
+    );
+    expect(rows).toHaveLength(3);
+    expect(rows[0].title).toContain("자세히 보기");
+  });
+
+  it("세 셀렉터가 모두 없으면 기존 동작과 동일하다", () => {
+    const withOptionalFields = applySpec(
+      html,
+      { ...base, hintSetAt: "2026-01-01T00:00:00.000Z" },
+      pageUrl,
+    );
+    expect(withOptionalFields).toEqual(applySpec(html, base, pageUrl));
+    expect(withOptionalFields[0].title).toContain("자세히 보기");
+    expect(withOptionalFields[0].link).toBe("https://x.kr/more/1");
+  });
+
+  it("titleSelector로도 제목을 못 찾고 앵커·제목 후보도 없으면 그 항목을 건너뛴다", () => {
+    const h = `<html><body><ul>
+      <li class="row"><span>짧음</span></li>
+      <li class="row"><a href="/v/2">공모전 제목 둘입니다</a></li>
+    </ul></body></html>`;
+    const rows = applySpec(h, { ...base, titleSelector: ".nope" }, pageUrl);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].title).toBe("공모전 제목 둘입니다");
+  });
+
+  it("앵커가 없는 항목도 titleSelector로 제목을 얻는다", () => {
+    const h = `<html><body><ul>
+      <li class="row" data-href="/v/1"><span class="t">짧은</span></li>
+    </ul></body></html>`;
+    const rows = applySpec(h, { ...base, titleSelector: ".t" }, pageUrl);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].title).toBe("짧은");
+    expect(rows[0].link).toBe("https://x.kr/v/1");
+  });
+});
+
 describe("fieldsFromRows", () => {
   const row = (attrs: Record<string, unknown>): ExtractedRow => ({
     title: "제목",
