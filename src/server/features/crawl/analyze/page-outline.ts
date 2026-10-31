@@ -14,6 +14,14 @@ export const TEXT_NODE_LIMIT = 120;
 export const LINK_SECTION_LIMIT = 40;
 
 const HREF_LIMIT = 120;
+// 링크 구역의 주소는 모델이 listCandidates.url로 그대로 옮겨 적어 페이지 이동에 쓴다.
+// 잘리면 조용히 깨진 URL이 되므로 본문 줄의 120자보다 훨씬 넉넉히 둔다.
+const LINK_SECTION_HREF_LIMIT = 500;
+// 긴 한글 주소가 40줄 쌓여도 본문 예산이 바닥나지 않게 구역 전체를 제한한다.
+const LINK_SECTION_MAX_BYTES = 16 * 1024;
+// 링크 구역 줄이 `^\s*\[\d+\]`(번호 줄 판별)에 걸리지 않도록 붙이는 접두. 링크 텍스트가
+// "[1] 안내"처럼 생겨도 hintMatchesOutline이 번호 없는 줄을 번호 줄로 착각하지 않는다.
+const LINK_LINE_PREFIX = "- ";
 const INDENT_MAX_DEPTH = 16;
 const INDENT_UNIT = "  ";
 export const LINK_SECTION_HEADER = "── 페이지 내 링크 (목록 후보 판단용) ──";
@@ -24,14 +32,6 @@ const TEXT_NODE = 3;
 
 // 본문이 아닌 요소. head는 body가 비어 documentElement로 폴백할 때만 섞여 들어온다.
 const SKIPPED_TAGS = new Set(["head", "title", "meta", "link", "base", "br", "wbr"]);
-
-// 이 요소들만 들어 있는 앵커는 "텍스트 한 줄짜리 링크"로 본다. 그 밖의 블록 요소를
-// 품은 앵커(카드 전체를 <a>로 감싼 경우)는 안쪽 텍스트를 각각 번호로 보여야 제목과
-// 요약을 구분해서 가리킬 수 있다.
-const INLINE_TAGS = new Set([
-  "span", "b", "strong", "em", "i", "u", "s", "small", "sub", "sup", "mark",
-  "abbr", "time", "font", "del", "ins", "code", "img",
-]);
 
 const NON_NAVIGATION_HREF = /^(?:#|javascript:|mailto:|tel:)/i;
 
@@ -55,18 +55,31 @@ function clip(text: string, limit: number): string {
 }
 
 // llm-read.ts의 VISIBLE_TEXT가 `a→\S*`로 주소를 떼므로 주소 안에 공백이 없어야 한다.
-function compactHref(href: string): string {
-  return clip(href.trim().replace(/\s+/g, "%20"), HREF_LIMIT);
+function compactHref(href: string, limit: number = HREF_LIMIT): string {
+  return clip(href.trim().replace(/\s+/g, "%20"), limit);
 }
 
 function indent(depth: number): string {
   return INDENT_UNIT.repeat(Math.min(depth, INDENT_MAX_DEPTH));
 }
 
-function isSimpleAnchor(a: Element): boolean {
-  return [...a.querySelectorAll("*")].every((el) =>
-    INLINE_TAGS.has(el.tagName.toLowerCase()),
-  );
+// 한 줄로 합쳐도 되는 앵커: 텍스트 조각이 하나뿐이고 그것이 앵커의 직계 자식일 때.
+// 앵커 안에 span 등으로 제목·날짜가 나뉘어 있으면 한 줄로 합치는 순간 날짜를 별도
+// 필드로 가리킬 수 없게 된다. 각 조각이 자기 부모 요소를 ref로 받아야 한다.
+function isSingleTextAnchor(a: Element): boolean {
+  let texts = 0;
+  const countTexts = (node: Node): boolean => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === TEXT_NODE) {
+        if (foldText(child.textContent ?? "") === "") continue;
+        if (child.parentNode !== a || ++texts > 1) return false;
+      } else if (child.nodeType === ELEMENT_NODE && !countTexts(child)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  return countTexts(a);
 }
 
 function imageSource(img: Element): string {
@@ -129,8 +142,9 @@ function walkImagesOnly(parent: Element, depth: number, out: OutlineBuilder): vo
 
 function walkAnchor(a: Element, href: string, depth: number, out: OutlineBuilder): void {
   const target = compactHref(href);
-  if (!isSimpleAnchor(a)) {
-    // 카드 전체를 감싼 링크: 링크 자체는 ref로 남기고 안쪽 내용은 각자 번호를 받는다.
+  if (!isSingleTextAnchor(a)) {
+    // 텍스트 조각이 여럿인 링크(카드 전체, 제목+날짜 span): 링크 자체는 ref로 남기고
+    // 안쪽 조각은 각자 가장 가까운 부모 요소를 ref로 번호를 받는다.
     out.emit(depth, a, `a→${target} ""`);
     walkChildren(a, depth, out);
     return;
@@ -196,14 +210,18 @@ function linkLabel(a: Element): string {
 function buildLinkSection(originalDocument: Document): { text: string; count: number } {
   const seen = new Set<string>();
   const lines: string[] = [];
+  let bytes = 0;
   for (const a of originalDocument.querySelectorAll("a[href]")) {
     if (lines.length >= LINK_SECTION_LIMIT) break;
     const href = (a.getAttribute("href") ?? "").trim();
     if (!href || NON_NAVIGATION_HREF.test(href) || seen.has(href)) continue;
     const label = clip(linkLabel(a), TEXT_NODE_LIMIT);
     if (!label) continue;
+    const line = `${LINK_LINE_PREFIX}${label} → ${compactHref(href, LINK_SECTION_HREF_LIMIT)}`;
+    bytes += Buffer.byteLength(line, "utf8") + 1;
+    if (bytes > LINK_SECTION_MAX_BYTES) break;
     seen.add(href);
-    lines.push(`${label} → ${compactHref(href)}`);
+    lines.push(line);
   }
   const body = lines.length > 0 ? lines : [EMPTY_LINK_SECTION_LINE];
   return { text: [LINK_SECTION_HEADER, ...body].join("\n"), count: lines.length };

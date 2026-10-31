@@ -156,6 +156,105 @@ describe("buildPageOutline", () => {
     expect(outline.document.documentElement.outerHTML).toBe(reference.documentElement.outerHTML);
   });
 
+  describe("ref 공간 불변식: 개요 문서 === parseHTML + stripNoise", () => {
+    // applySpec이 보는 문서를 그대로 재현해 요소 구조 전체를 비교한다. 개요가 무엇이든
+    // 추가로 지우거나 바꾸면(documentElement 접근자가 head를 만드는 것 포함) 여기서 깨진다.
+    const expectSameDomAsApplySpec = (html: string): void => {
+      const outline = buildPageOutline(html);
+      const { document: reference } = parseHTML(html);
+      stripNoise(reference);
+
+      expect(outline.document.documentElement?.outerHTML ?? "").toBe(
+        reference.documentElement?.outerHTML ?? "",
+      );
+      for (const el of outline.refs.slice(1)) {
+        expect(el && outline.document.contains(el)).toBe(true);
+      }
+    };
+
+    const KITCHEN_SINK = `<!doctype html><html lang="ko"><head><title>t</title><meta charset="utf-8">
+      <style>.a{}</style><script>var x=1;</script></head><body>
+      <!-- 주석 -->
+      <header><a href="/">홈</a></header>
+      <div class="gnb"><a href="/m">메뉴</a></div>
+      <div class="menu-area"><a href="/m2">메뉴2</a></div>
+      <aside>사이드</aside>
+      <form action="/s"><input name="q"></form>
+      <div aria-hidden="true">숨김</div>
+      <script>var y=2;</script><style>.b{}</style><noscript>스크립트 필요</noscript>
+      <iframe src="/f"></iframe>
+      <main id="m">
+        <svg class="ico"><path d="M0 0"/></svg>
+        <p>줄<br>바꿈</p>
+        <img src="/t/1.png" alt="포스터">
+        <a href="/outer">바깥 <a href="/inner">안쪽</a></a>
+        <ul><li><a href="/n/1"><span>제목</span><span>2026-01-05</span></a></li></ul>
+      </main>
+      <footer>푸터</footer></body></html>`;
+
+    it.each([
+      ["html/body 없는 조각", '<ul><li><a href="/p/1">조각 공고</a></li></ul>'],
+      ["html 안에 body 없음", '<html><div><a href="/p/1">공고</a></div></html>'],
+      ["head만 있음", "<html><head><title>빈 페이지</title></head></html>"],
+      ["빈 body", "<html><body></body></html>"],
+      ["빈 문자열", ""],
+      ["노이즈 요소를 전부 담은 전체 문서", KITCHEN_SINK],
+    ])("%s", (_name, html) => {
+      expectSameDomAsApplySpec(html);
+    });
+  });
+
+  it("앵커 안의 텍스트가 여러 조각이면 합치지 않고 각 조각이 자기 요소를 ref로 받는다", () => {
+    const { text, refs } = buildPageOutline(
+      page('<ul><li><a href="/n/1"><span class="t">제목입니다</span><span class="d">2026-01-05</span></a></li></ul>'),
+    );
+    const lines = numberedLines(text);
+
+    expect(lines[0]).toMatch(/\[1\] a→\/n\/1 ""/);
+    expect(refs[1]?.tagName).toBe("A");
+    expect(lines[1]).toContain('"제목입니다"');
+    expect(refs[2]?.className).toBe("t");
+    expect(lines[2]).toContain('"2026-01-05"');
+    expect(refs[3]?.className).toBe("d");
+    expect(text).not.toContain("제목입니다2026");
+  });
+
+  it("텍스트 노드가 하나뿐인 앵커만 한 줄로 유지한다", () => {
+    const single = numberedLines(buildPageOutline(page('<a href="/n/1">제목</a>')).text);
+    const nestedEl = numberedLines(buildPageOutline(page('<a href="/n/1"><b>제목</b></a>')).text);
+
+    expect(single).toHaveLength(1);
+    expect(single[0]).toContain('a→/n/1 "제목"');
+    // 텍스트를 가진 자식 요소가 있으면 그 요소가 ref여야 하므로 한 줄로 합치지 않는다.
+    expect(nestedEl).toHaveLength(2);
+  });
+
+  it("href의 공백은 %20으로 바꾼다 (llm-read VISIBLE_TEXT의 \S* 전제)", () => {
+    const { text } = buildPageOutline(page('<a href="/notice/view?q=a b  c">공고 제목</a>'));
+    const line = numberedLines(text)[0] ?? "";
+
+    expect(line).toContain("a→/notice/view?q=a%20b%20c ");
+    expect(hintMatchesOutline(text, "공고 제목")).toBe(true);
+    expect(hintMatchesOutline(text, "a%20b")).toBe(false);
+  });
+
+  it("링크 구역의 주소는 본문 줄 상한(120자)으로 절단하지 않는다", () => {
+    const longHref = `/board/list.it?${"k=v&".repeat(60)}end`;
+    const { text } = buildPageOutline(page(`<nav><a href="${longHref}">목록</a></nav><p>본문</p>`));
+
+    expect(longHref.length).toBeGreaterThan(200);
+    expect(text).toContain(`목록 → ${longHref}`);
+  });
+
+  it("링크 구역 줄은 [n] 형태의 링크 텍스트여도 번호 줄로 오인되지 않는다", () => {
+    const { text } = buildPageOutline(page('<nav><a href="/g">[1] 안내</a></nav><p>본문</p>'));
+    const section = text.split(LINK_SECTION_HEADER)[1] ?? "";
+
+    expect(section).toContain("[1] 안내 → /g");
+    expect(numberedLines(section)).toHaveLength(0);
+    expect(hintMatchesOutline(text, "안내")).toBe(false);
+  });
+
   it("개요 끝에 원본 문서의 링크 구역을 덧붙인다", () => {
     const { text } = buildPageOutline(NOTICE_TABLE);
     const section = text.split(LINK_SECTION_HEADER)[1] ?? "";
