@@ -1,4 +1,8 @@
-import { reanalyzeResultSchema, type ApplySpecRequest } from "@myportal/api-contracts";
+import {
+  applySpecRequestSchema,
+  reanalyzeResultSchema,
+  type ApplySpecRequest,
+} from "@myportal/api-contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppError, errorCodes } from "../../errors/error-codes";
 import { analyzeListing, type ListingAnalysis } from "../crawl/analyze";
@@ -679,12 +683,49 @@ describe("applySpecForSource", () => {
       expect(saved).not.toHaveProperty("hintSetAt");
     });
 
-    it("hint를 생략해도 둘 다 남기지 않는다", async () => {
+    it("hint를 생략하면 저장된 hint와 hintSetAt이 그대로 남는다", async () => {
       setupDb({ storedSpec: storedWith({ hintSetAt: OLD_SET_AT }) });
+      await applySpecForSource(USER, SOURCE, applyInput());
+      const saved = savedSpecJson();
+      expect(saved.hint).toBe("공고");
+      expect(saved.hintSetAt).toBe(OLD_SET_AT);
+    });
+
+    it("hint를 생략하면 클라이언트 spec의 hint가 아니라 저장된 값을 쓴다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: OLD_SET_AT }) });
+      await applySpecForSource(
+        USER,
+        SOURCE,
+        applyInput({ spec: { ...applySpec, hint: "장학", hintSetAt: "2030-01-01T00:00:00.000Z" } }),
+      );
+      const saved = savedSpecJson();
+      expect(saved.hint).toBe("공고");
+      expect(saved.hintSetAt).toBe(OLD_SET_AT);
+    });
+
+    it("hint를 생략하고 저장된 힌트도 없으면 둘 다 없다", async () => {
+      setupDb({ storedSpec: { strategy: "html", itemSelector: "li" } });
       await applySpecForSource(USER, SOURCE, applyInput());
       const saved = savedSpecJson();
       expect(saved).not.toHaveProperty("hint");
       expect(saved).not.toHaveProperty("hintSetAt");
+    });
+
+    it("hint를 생략하면 hintSetAt이 없는 구버전 스펙도 시각이 생기지 않는다", async () => {
+      setupDb({ storedSpec: storedWith() });
+      await applySpecForSource(USER, SOURCE, applyInput());
+      const saved = savedSpecJson();
+      expect(saved.hint).toBe("공고");
+      expect(saved).not.toHaveProperty("hintSetAt");
+    });
+
+    it("요청 스키마는 생략·빈 문자열·2자 이상 값을 받고 1자는 거부한다", () => {
+      const base = { spec: {}, fields: [], fetchStrategy: "html" };
+      expect(applySpecRequestSchema.safeParse(base).success).toBe(true);
+      expect(applySpecRequestSchema.safeParse({ ...base, hint: "" }).success).toBe(true);
+      expect(applySpecRequestSchema.safeParse({ ...base, hint: "  " }).data?.hint).toBe("");
+      expect(applySpecRequestSchema.safeParse({ ...base, hint: "공고" }).success).toBe(true);
+      expect(applySpecRequestSchema.safeParse({ ...base, hint: "공" }).success).toBe(false);
     });
 
     it("hintSetAt이 없는 구버전 스펙에 같은 힌트를 다시 적용해도 시각이 생기지 않는다", async () => {

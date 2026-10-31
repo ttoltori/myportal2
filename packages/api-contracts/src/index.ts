@@ -349,7 +349,17 @@ export const applySpecRequestSchema = z.object({
   spec: z.unknown(),
   fields: z.array(sourceFieldSchema).max(30),
   fetchStrategy: fetchStrategySchema,
-  hint: z.string().trim().min(2).max(500).optional(),
+  // reanalyzeRequestSchema.hint와 같은 세 가지 의사다. 두 호출이 같은 화면에서 같은 값을
+  // 보내므로 인코딩이 갈리면 생략이 정반대 뜻이 된다.
+  //   생략  → 저장된 힌트와 그 입력 시각을 그대로 둔다 (힌트를 다루지 않는 호출처)
+  //   ""    → 힌트를 삭제한다 (hint와 hintSetAt을 모두 남기지 않는다)
+  //   값    → 그 값으로 설정한다. 저장된 값과 같으면 입력 시각을 유지하고 다르면 지금으로 갱신한다
+  hint: z
+    .string()
+    .trim()
+    .max(500)
+    .refine((v) => v === "" || v.length >= 2, "힌트는 2자 이상이어야 합니다.")
+    .optional(),
   profile: z.unknown().nullable().optional(),
 });
 export type ApplySpecRequest = z.infer<typeof applySpecRequestSchema>;

@@ -368,8 +368,10 @@ function parseClientProfile(raw: unknown, sourceId: string): FetchProfile | null
 // 재분석 화면은 저장된 힌트를 입력란에 채워 항상 문자열로 보내므로, "값이 왔다"를 새 입력으로
 // 읽으면 적용할 때마다 시각이 리셋되어 낡음 경고가 영구히 사라진다. 그래서 클라이언트가
 // 무엇을 보내든 서버가 저장된 힌트와 값을 비교해 정한다. 클라이언트 spec에 실려 온
-// hint/hintSetAt은 믿지 않고 버린다.
-//  - 힌트가 없다(생략·빈 문자열) → hint와 hintSetAt을 모두 남기지 않는다.
+// hint/hintSetAt은 믿지 않고 버린다. 요청의 세 가지 의사(계약 applySpecRequestSchema.hint):
+//  - 생략 → 저장된 힌트와 입력 시각을 그대로 둔다. 힌트를 모르는 클라이언트가 적용해도
+//    힌트가 조용히 사라지지 않는다.
+//  - "" → 힌트를 삭제한다(hint와 hintSetAt을 모두 남기지 않는다).
 //  - 저장된 힌트와 같은 문자열 → 저장된 hintSetAt을 보존한다. 구버전 스펙처럼 없었다면
 //    없는 채로 둔다(없던 시각이 "지금"으로 생기면 오래된 힌트가 방금 입력된 것처럼 보인다).
 //  - 다른 문자열 → 지금이 실제 입력 시점이다.
@@ -381,14 +383,15 @@ async function stampHint(
   const rest = { ...spec };
   delete rest.hint;
   delete rest.hintSetAt;
-  if (!inputHint) return rest;
+  if (inputHint === "") return rest;
 
   const active = await getDb().query<{ spec: unknown }>(sourcesSql.latestActiveSpec, [sourceId]);
   const stored = active.rows[0] ? storedHintOf(active.rows[0].spec) : undefined;
-  if (stored?.value === inputHint) {
+  if (inputHint === undefined || stored?.value === inputHint) {
+    if (!stored) return rest;
     return stored.setAt === null
-      ? { ...rest, hint: inputHint }
-      : { ...rest, hint: inputHint, hintSetAt: stored.setAt };
+      ? { ...rest, hint: stored.value }
+      : { ...rest, hint: stored.value, hintSetAt: stored.setAt };
   }
   return { ...rest, hint: inputHint, hintSetAt: new Date().toISOString() };
 }

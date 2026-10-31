@@ -192,7 +192,9 @@ export default function SourceDetailPage() {
         spec: preview.spec,
         fields: panelFields,
         fetchStrategy: preview.fetchStrategy,
-        hint: panelHint.trim() || undefined,
+        // 재분석 호출과 같은 값을 보낸다. 비어 있으면 ""가 나가 힌트 삭제가 되고, 생략은
+        // "저장된 힌트 유지"라는 뜻이라 쓰지 않는다.
+        hint: panelHint.trim(),
         // 분석이 측정한 수집 프로파일. 빠지면 적용한 스펙이 기본 수집 방식으로 돌아간다.
         profile: preview.profile ?? null,
       });
