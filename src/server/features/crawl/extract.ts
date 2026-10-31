@@ -1,5 +1,6 @@
 import type { FieldRole, FieldType } from "@myportal/api-contracts";
 import { DOMParser, parseHTML } from "linkedom";
+import { parentSelector } from "./dom-selector";
 import { absolutize } from "./url";
 
 // ── 스펙 타입 (crawl_specs.spec jsonb에 저장되는 형태) ──
@@ -477,33 +478,6 @@ function pickMainAnchor(el: Element): HTMLAnchorElement | null {
   if (/^(javascript:|mailto:)/i.test(href)) return null;
   if (/^#$/.test(href) || /^#[a-zA-Z0-9_-]*$/.test(href)) return null;
   return best;
-}
-
-function selectorFor(el: Element): string {
-  const cls = (el.getAttribute("class") ?? "").trim().split(/\s+/)[0];
-  return cls ? `${el.tagName.toLowerCase()}.${cssEscape(cls)}` : el.tagName.toLowerCase();
-}
-
-// 클래스/id가 없는 범용 태그(예: 그냥 ul)는 셀렉터가 너무 넓어지므로
-// 가장 가까운 식별 가능한 조상으로 한정한다.
-function parentSelector(el: Element): string {
-  const id = el.getAttribute("id");
-  if (id) return `#${cssEscape(id)}`;
-  const sel = selectorFor(el);
-  if (sel.includes(".")) return sel;
-  let anc = el.parentElement;
-  while (anc) {
-    const aid = anc.getAttribute("id");
-    if (aid) return `#${cssEscape(aid)} ${sel}`;
-    const c = (anc.getAttribute("class") ?? "").trim().split(/\s+/)[0];
-    if (c) return `${anc.tagName.toLowerCase()}.${cssEscape(c)} ${sel}`;
-    anc = anc.parentElement;
-  }
-  return sel;
-}
-
-function cssEscape(s: string): string {
-  return s.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
 }
 
 // ── 스펙 적용 ───────────────────────────────────────────
