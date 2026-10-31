@@ -129,6 +129,7 @@ function analysis(patch: Partial<ListingAnalysis> = {}): ListingAnalysis {
     suggested: { displayName: "", categoryPath: [], tagNames: [] },
     listCandidates: [],
     pageKind: "list",
+    hintMatched: null,
     ...patch,
   };
 }
@@ -298,6 +299,111 @@ describe("reanalyzeSource", () => {
       seen.add(res.outcome);
     }
     expect([...seen].sort()).toEqual(["detail", "error", "link-only", "list"]);
+  });
+
+  // ── 저장된 힌트의 낡음 표시 ──
+  describe("storedHint", () => {
+    const SET_AT = "2026-01-12T00:00:00.000Z";
+    const storedWith = (extra: Record<string, unknown> = {}) => ({
+      strategy: "html",
+      itemSelector: "li",
+      hint: "공고",
+      ...extra,
+    });
+
+    it("저장된 힌트와 입력 시점을 storedHint로 돌려준다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: SET_AT }) });
+      vi.mocked(analyzeListing).mockResolvedValue(analysis({ hintMatched: true }));
+      const res = await reanalyzeSource(USER, SOURCE);
+      expect(res.storedHint).toEqual({ value: "공고", setAt: SET_AT, matchesPage: true });
+      expect(() => reanalyzeResultSchema.parse(res)).not.toThrow();
+    });
+
+    // 이 값을 넘기지 않으면 스펙의 hintSetAt이 재분석마다 "지금"이 되어 낡음 표시가 사라진다.
+    it("저장된 힌트를 재사용할 때 원래 입력 시각을 analyzeListing에 넘긴다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: SET_AT }) });
+      await reanalyzeSource(USER, SOURCE);
+      expect(vi.mocked(analyzeListing).mock.calls[0]?.[0].hintSetAt).toBe(SET_AT);
+    });
+
+    it("저장된 힌트가 현재 페이지에 없으면 matchesPage=false다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: SET_AT }) });
+      vi.mocked(analyzeListing).mockResolvedValue(analysis({ hintMatched: false }));
+      const res = await reanalyzeSource(USER, SOURCE);
+      expect(res.storedHint?.matchesPage).toBe(false);
+    });
+
+    it("목록을 못 찾은 재분석에서도 storedHint를 돌려준다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: SET_AT }) });
+      vi.mocked(analyzeListing).mockResolvedValue(
+        analysis({ outcome: null, fieldSource: null, hintMatched: false }),
+      );
+      const res = await reanalyzeSource(USER, SOURCE);
+      expect(res.outcome).toBe("detail");
+      expect(res.storedHint).toEqual({ value: "공고", setAt: SET_AT, matchesPage: false });
+    });
+
+    it("hintSetAt이 없는 구버전 스펙이면 setAt=null이고 시각을 넘기지 않는다", async () => {
+      setupDb({ storedSpec: storedWith() });
+      vi.mocked(analyzeListing).mockResolvedValue(analysis({ hintMatched: true }));
+      const res = await reanalyzeSource(USER, SOURCE);
+      expect(res.storedHint).toEqual({ value: "공고", setAt: null, matchesPage: true });
+      expect(vi.mocked(analyzeListing).mock.calls[0]?.[0].hintSetAt).toBeUndefined();
+    });
+
+    it("날짜로 읽히지 않는 hintSetAt은 모르는 것으로 취급한다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: "어제" }) });
+      vi.mocked(analyzeListing).mockResolvedValue(analysis({ hintMatched: true }));
+      const res = await reanalyzeSource(USER, SOURCE);
+      expect(res.storedHint?.setAt).toBeNull();
+    });
+
+    it("힌트를 빈 문자열로 넘기면 저장된 힌트를 쓰지 않고 storedHint도 null이다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: SET_AT }) });
+      const res = await reanalyzeSource(USER, SOURCE, "");
+      expect(res.storedHint).toBeNull();
+      const arg = vi.mocked(analyzeListing).mock.calls[0]?.[0];
+      expect(arg?.hint).toBeUndefined();
+      expect(arg?.hintSetAt).toBeUndefined();
+    });
+
+    it("저장된 힌트가 없으면 storedHint는 null이다", async () => {
+      setupDb({ storedSpec: { strategy: "html", itemSelector: "li" } });
+      expect((await reanalyzeSource(USER, SOURCE)).storedHint).toBeNull();
+    });
+
+    // 화면은 저장된 힌트를 입력란에 채워 항상 문자열로 보낸다.
+    it("저장된 힌트와 같은 값을 명시해도 재사용으로 보고 입력 시각을 이어 간다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: SET_AT }) });
+      vi.mocked(analyzeListing).mockResolvedValue(analysis({ hintMatched: true }));
+      const res = await reanalyzeSource(USER, SOURCE, "공고");
+      expect(vi.mocked(analyzeListing).mock.calls[0]?.[0].hintSetAt).toBe(SET_AT);
+      expect(res.storedHint?.setAt).toBe(SET_AT);
+    });
+
+    it("다른 힌트를 넘기면 새 입력이므로 시각을 넘기지 않고 storedHint도 null이다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: SET_AT }) });
+      const res = await reanalyzeSource(USER, SOURCE, "장학");
+      expect(vi.mocked(analyzeListing).mock.calls[0]?.[0].hintSetAt).toBeUndefined();
+      expect(res.storedHint).toBeNull();
+    });
+
+    it("판정할 개요가 없으면(hintMatched=null) storedHint를 알리지 않는다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: SET_AT }) });
+      vi.mocked(analyzeListing).mockResolvedValue(analysis({ hintMatched: null }));
+      expect((await reanalyzeSource(USER, SOURCE)).storedHint).toBeNull();
+    });
+  });
+
+  it("분석이 측정한 프로파일을 preview.profile로 돌려준다", async () => {
+    const profile = {
+      mode: "rendered" as const,
+      settleMs: 3000,
+      measuredAt: "2026-10-31T00:00:00.000Z",
+    };
+    vi.mocked(analyzeListing).mockResolvedValue(analysis({ profile }));
+    const res = await reanalyzeSource(USER, SOURCE);
+    expect(res.preview?.profile).toEqual(profile);
   });
 
   it("crawl_specs·source_fields에 쓰기를 하지 않는다", async () => {
@@ -513,6 +619,112 @@ describe("applySpecForSource", () => {
   it("hint가 없으면 spec을 그대로 저장한다", async () => {
     await applySpecForSource(USER, SOURCE, applyInput());
     expect(savedSpecJson()).toEqual(applySpec);
+  });
+
+  // ── hintSetAt 불변식: 힌트 문자열이 바뀔 때만 갱신된다 ──
+  describe("hintSetAt", () => {
+    const OLD_SET_AT = "2026-01-12T00:00:00.000Z";
+    const storedWith = (extra: Record<string, unknown> = {}) => ({
+      strategy: "html",
+      itemSelector: "li",
+      hint: "공고",
+      ...extra,
+    });
+
+    it("저장된 힌트와 같은 문자열을 적용하면 hintSetAt이 바뀌지 않는다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: OLD_SET_AT }) });
+      await applySpecForSource(USER, SOURCE, applyInput({ hint: "공고" }));
+      expect(savedSpecJson().hint).toBe("공고");
+      expect(savedSpecJson().hintSetAt).toBe(OLD_SET_AT);
+    });
+
+    it("클라이언트 spec에 실린 hintSetAt이 있어도 저장된 시각을 쓴다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: OLD_SET_AT }) });
+      await applySpecForSource(
+        USER,
+        SOURCE,
+        applyInput({
+          hint: "공고",
+          spec: { ...applySpec, hint: "공고", hintSetAt: "2030-01-01T00:00:00.000Z" },
+        }),
+      );
+      expect(savedSpecJson().hintSetAt).toBe(OLD_SET_AT);
+    });
+
+    it("다른 문자열을 적용하면 hintSetAt이 현재 시각으로 갱신된다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: OLD_SET_AT }) });
+      const before = Date.now();
+      await applySpecForSource(USER, SOURCE, applyInput({ hint: "장학" }));
+      const saved = savedSpecJson();
+      expect(saved.hint).toBe("장학");
+      expect(Date.parse(saved.hintSetAt ?? "")).toBeGreaterThanOrEqual(before);
+    });
+
+    it("저장된 힌트가 없던 소스에 처음 힌트를 적용하면 현재 시각이 찍힌다", async () => {
+      setupDb({ storedSpec: { strategy: "html", itemSelector: "li" } });
+      const before = Date.now();
+      await applySpecForSource(USER, SOURCE, applyInput({ hint: "공고" }));
+      expect(Date.parse(savedSpecJson().hintSetAt ?? "")).toBeGreaterThanOrEqual(before);
+    });
+
+    it("빈 문자열로 적용하면 hint와 hintSetAt이 둘 다 사라진다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: OLD_SET_AT }) });
+      await applySpecForSource(
+        USER,
+        SOURCE,
+        applyInput({ hint: "", spec: { ...applySpec, hint: "공고", hintSetAt: OLD_SET_AT } }),
+      );
+      const saved = savedSpecJson();
+      expect(saved).not.toHaveProperty("hint");
+      expect(saved).not.toHaveProperty("hintSetAt");
+    });
+
+    it("hint를 생략해도 둘 다 남기지 않는다", async () => {
+      setupDb({ storedSpec: storedWith({ hintSetAt: OLD_SET_AT }) });
+      await applySpecForSource(USER, SOURCE, applyInput());
+      const saved = savedSpecJson();
+      expect(saved).not.toHaveProperty("hint");
+      expect(saved).not.toHaveProperty("hintSetAt");
+    });
+
+    it("hintSetAt이 없는 구버전 스펙에 같은 힌트를 다시 적용해도 시각이 생기지 않는다", async () => {
+      setupDb({ storedSpec: storedWith() });
+      await applySpecForSource(USER, SOURCE, applyInput({ hint: "공고" }));
+      const saved = savedSpecJson();
+      expect(saved.hint).toBe("공고");
+      expect(saved).not.toHaveProperty("hintSetAt");
+    });
+  });
+
+  describe("프로파일 저장", () => {
+    const PROFILE = { mode: "rendered", settleMs: 3000, measuredAt: "2026-10-31T00:00:00.000Z" };
+
+    it("검증을 통과한 프로파일을 트랜잭션 안에서 저장한다", async () => {
+      await applySpecForSource(USER, SOURCE, applyInput({ profile: PROFILE }));
+      const [call] = txCallsOf(sourcesSql.updateFetchProfile);
+      expect(call?.[1]?.[0]).toBe(SOURCE);
+      expect(JSON.parse(String(call?.[1]?.[1]))).toEqual(PROFILE);
+    });
+
+    it("스키마에 맞지 않는 프로파일은 저장하지 않고 적용은 계속한다", async () => {
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+      const res = await applySpecForSource(
+        USER,
+        SOURCE,
+        applyInput({ profile: { mode: "bogus", settleMs: -1 } }),
+      );
+      expect(txCallsOf(sourcesSql.updateFetchProfile)).toHaveLength(0);
+      expect(txCallsOf(sourcesSql.insertSpec)).toHaveLength(1);
+      expect(res.version).toBe(TX_MAX_VERSION + 1);
+      // 원본 값은 로그에 싣지 않는다.
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain("bogus");
+      errorLog.mockRestore();
+    });
+
+    it("프로파일이 없으면 fetch_profile을 건드리지 않는다", async () => {
+      await applySpecForSource(USER, SOURCE, applyInput());
+      expect(txCallsOf(sourcesSql.updateFetchProfile)).toHaveLength(0);
+    });
   });
 
   it("manual_actions에 apply-spec을 기록한다", async () => {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { applySpec, type CrawlSpec } from "../extract";
+import { applySpec, parseJsonLdList, type CrawlSpec } from "../extract";
 import type { RenderTimings } from "../render";
 
 // 수집 프로파일: "어떻게 가져오는가". 스펙("가져온 것에서 무엇을 뽑는가")과
@@ -41,6 +41,19 @@ export function settleBudget(timings: RenderTimings): number {
   return Math.min(SETTLE_MAX_MS, Math.max(SETTLE_MIN_MS, budget));
 }
 
+// 같은 전략으로 문서에서 뽑히는 항목 수. structured는 CSS 셀렉터가 아니라 JSON-LD를 읽으므로
+// applySpec으로 세면 정적·렌더 양쪽에서 항상 0건이 되어 매번 rendered로 판정된다.
+// JSON-LD는 보통 정적 HTML에 있어 그런 소스가 수집마다 Chromium을 띄우게 된다.
+function countRows(
+  html: string,
+  args: { spec: CrawlSpec; strategy: "rss" | "structured" | "html"; pageUrl: string },
+): number {
+  if (args.strategy === "structured") {
+    return parseJsonLdList(html, args.pageUrl)?.length ?? 0;
+  }
+  return applySpec(html, args.spec, args.pageUrl).length;
+}
+
 export function buildFetchProfile(args: {
   staticHtml: string;
   renderedHtml: string;
@@ -58,8 +71,8 @@ export function buildFetchProfile(args: {
     measuredAt,
   };
   // 추측하지 않고 같은 스펙을 정적 HTML과 렌더 DOM 양쪽에 적용해 비교한다.
-  const renderedRows = applySpec(args.renderedHtml, args.spec, args.pageUrl).length;
-  const staticRows = applySpec(args.staticHtml, args.spec, args.pageUrl).length;
+  const renderedRows = countRows(args.renderedHtml, args);
+  const staticRows = countRows(args.staticHtml, args);
 
   if (renderedRows > 0 && staticRows >= renderedRows * STATIC_YIELD_RATIO) {
     return { mode: "static", ...measured };

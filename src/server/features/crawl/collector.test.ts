@@ -3,7 +3,7 @@ import { getDb } from "../../config/db";
 import { AppError, errorCodes } from "../../errors/error-codes";
 import { sourcesSql } from "../sources/sources.sql";
 import { collectSource, createSourceWithBaseline, repairSpec } from "./collector";
-import { enrichWithLlm, type EnrichResult } from "./llm/enrich";
+import { runAnalysis, type AnalysisOutcome } from "./analyze/run-analysis";
 import { fetchPage } from "./fetcher";
 import { renderPage } from "./render";
 import { robotsAllowed } from "./robots";
@@ -17,7 +17,7 @@ vi.mock("./render", () => ({ renderPage: vi.fn() }));
 vi.mock("./robots", () => ({ robotsAllowed: vi.fn() }));
 vi.mock("./cluster", () => ({ clusterItems: vi.fn() }));
 vi.mock("../keywords/match", () => ({ matchNewItemsForSubscribers: vi.fn() }));
-vi.mock("./llm/enrich", () => ({ enrichWithLlm: vi.fn() }));
+vi.mock("./analyze/run-analysis", () => ({ runAnalysis: vi.fn() }));
 // CRAWL-03: 정기 수집 경로는 LLM을 호출하면 안 된다. 호출 여부를 확인하려고 모킹한다.
 vi.mock("./analyze/llm-read", () => ({ readPage: vi.fn(), readPageRepair: vi.fn() }));
 vi.mock("./llm/llm-client", () => ({ chatJson: vi.fn() }));
@@ -36,12 +36,23 @@ const llmRows: ExtractedRow[] = [
   { title: "AI 제목", link: "https://x.kr/n/1", publishedAt: null, attrs: { org: "기관A" } },
 ];
 
-function llmResult(spec: CrawlSpec, source: "llm" | "heuristic" = "llm"): EnrichResult {
+function htmlSpec(patch: Partial<CrawlSpec> = {}): CrawlSpec {
+  return { strategy: "html", itemSelector: "li.row", fields: {}, ...patch };
+}
+
+// runAnalysis 결과 모양. spec이 null이면 분석 실패(목록을 못 찾음)다.
+function outcome(spec: CrawlSpec | null): AnalysisOutcome {
   return {
     spec,
-    rows: llmRows,
-    fieldSource: source,
-    step: { label: "AI 필드 분석", status: "ok", detail: "" },
+    rows: spec ? llmRows : [],
+    strategy: "html",
+    feedUrl: null,
+    fieldSource: spec ? "llm" : null,
+    listCandidates: [],
+    suggested: { displayName: "", categoryPath: [], tagNames: [] },
+    pageKind: spec ? "list" : "unknown",
+    pageTitle: null,
+    steps: [],
   };
 }
 
@@ -99,11 +110,20 @@ beforeEach(() => {
 });
 
 describe("repairSpec", () => {
-  it("LLM 보강 스펙을 self-repair 새 버전으로 저장한다", async () => {
+  const HINT_SET_AT = "2026-01-12T00:00:00.000Z";
+  const prevWithHint: CrawlSpec = {
+    strategy: "html",
+    itemSelector: "li",
+    hint: "옛 공고 제목",
+    hintSetAt: HINT_SET_AT,
+  };
+
+  it("분석 결과를 self-repair 새 버전으로 저장한다", async () => {
     const db = fakeDb(null);
-    vi.mocked(enrichWithLlm).mockImplementation(async (args) =>
-      llmResult({
-        ...(args.base!.spec),
+    vi.mocked(runAnalysis).mockResolvedValue(
+      outcome({
+        strategy: "html",
+        itemSelector: "li.row",
         fields: { org: { selector: ".org", type: "text", label: "기관" } },
         fieldSource: "llm",
       }),
@@ -118,49 +138,137 @@ describe("repairSpec", () => {
     expect(saved?.json).toContain('"fieldSource":"llm"');
   });
 
-  it("LLM이 실패해도 휴리스틱 스펙은 저장된다 (fields 비어 있음)", async () => {
-    const db = fakeDb(null);
-    vi.mocked(enrichWithLlm).mockImplementation(async (args) =>
-      llmResult(args.base!.spec, "heuristic"),
-    );
-
-    const out = await repairSpec("src-1", LIST_HTML, PAGE_URL, null);
-
-    expect(out).not.toBeNull();
-    const saved = db.inserted();
-    expect(saved?.method).toBe("self-repair");
-    expect(saved?.spec.fieldSource).not.toBe("llm");
-    expect(Object.keys(saved?.spec.fields ?? {})).toHaveLength(0);
-  });
-
-  it("userId null, purpose self-repair, 휴리스틱 결과를 base로 enrich를 호출한다", async () => {
+  it("시스템 한도(userId null)·self-repair 목적·보수 호출 없이 분석한다", async () => {
     fakeDb(null);
-    vi.mocked(enrichWithLlm).mockImplementation(async (args) => llmResult(args.base!.spec));
+    vi.mocked(runAnalysis).mockResolvedValue(outcome(htmlSpec()));
 
     await repairSpec("src-1", LIST_HTML, PAGE_URL, null);
 
-    const args = vi.mocked(enrichWithLlm).mock.calls[0][0];
+    const args = vi.mocked(runAnalysis).mock.calls[0][0];
     expect(args.userId).toBeNull();
     expect(args.purpose).toBe("self-repair");
     expect(args.sourceId).toBe("src-1");
     expect(args.pageUrl).toBe(PAGE_URL);
-    expect(args.base?.spec.strategy).toBe("html");
+    expect(args.html).toBe(LIST_HTML);
+    expect(args.allowRepair).toBe(false);
   });
 
-  it("휴리스틱이 실패하면 base null로 구제를 시도하고, 구제도 실패하면 null을 반환한다", async () => {
-    const db = fakeDb(null);
-    vi.mocked(enrichWithLlm).mockResolvedValue(null);
+  describe("힌트 순서", () => {
+    it("힌트 없이 먼저 분석하고 성공하면 저장된 힌트로 재분석하지 않는다", async () => {
+      fakeDb(null);
+      vi.mocked(runAnalysis).mockResolvedValue(outcome(htmlSpec()));
 
-    const out = await repairSpec("src-1", EMPTY_HTML, PAGE_URL, null);
+      const out = await repairSpec("src-1", LIST_HTML, PAGE_URL, prevWithHint);
 
-    expect(vi.mocked(enrichWithLlm).mock.calls[0][0].base).toBeNull();
-    expect(out).toBeNull();
-    expect(db.inserted()).toBeNull();
+      expect(out).not.toBeNull();
+      expect(runAnalysis).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(runAnalysis).mock.calls[0][0].hint).toBeUndefined();
+    });
+
+    it("힌트 없이 실패하면 저장된 힌트와 원래 입력 시각으로 한 번 더 시도한다", async () => {
+      const db = fakeDb(null);
+      vi.mocked(runAnalysis)
+        .mockResolvedValueOnce(outcome(null))
+        .mockResolvedValueOnce(outcome(htmlSpec()));
+
+      const out = await repairSpec("src-1", LIST_HTML, PAGE_URL, prevWithHint);
+
+      expect(out).not.toBeNull();
+      expect(runAnalysis).toHaveBeenCalledTimes(2);
+      const [first, second] = vi.mocked(runAnalysis).mock.calls.map((c) => c[0]);
+      expect(first.hint).toBeUndefined();
+      expect(second.hint).toBe("옛 공고 제목");
+      // 생략하면 runAnalysis가 "지금"으로 찍어 낡음 표시가 사라진다.
+      expect(second.hintSetAt).toBe(HINT_SET_AT);
+      // 두 호출 모두 보수 호출을 막아 자가복구 1회당 LLM 호출이 최대 2회다.
+      expect(first.allowRepair).toBe(false);
+      expect(second.allowRepair).toBe(false);
+      expect(db.inserted()?.method).toBe("self-repair");
+    });
+
+    it("두 번 다 실패하면 null을 반환하고 아무것도 저장하지 않는다", async () => {
+      const db = fakeDb(null);
+      vi.mocked(runAnalysis).mockResolvedValue(outcome(null));
+
+      const out = await repairSpec("src-1", LIST_HTML, PAGE_URL, prevWithHint);
+
+      expect(out).toBeNull();
+      expect(runAnalysis).toHaveBeenCalledTimes(2);
+      expect(db.inserted()).toBeNull();
+    });
+
+    it("저장된 힌트가 없으면 실패해도 재시도하지 않는다", async () => {
+      fakeDb(null);
+      vi.mocked(runAnalysis).mockResolvedValue(outcome(null));
+
+      const out = await repairSpec("src-1", EMPTY_HTML, PAGE_URL, { strategy: "html" });
+
+      expect(out).toBeNull();
+      expect(runAnalysis).toHaveBeenCalledTimes(1);
+    });
   });
 
-  it("보강 스펙에도 기존 render=true가 유지된다", async () => {
+  describe("hintSetAt 보존", () => {
+    // runAnalysis는 hintSetAt을 못 받으면 지금 시각으로 찍는다. 저장 단계가 그것을 믿지 않고
+    // 이전 스펙의 값으로 되돌려야 재시도가 성공해도 힌트의 나이가 유지된다.
+    const stampedNow = "2030-01-01T00:00:00.000Z";
+
+    it("저장된 힌트로 재시도해 성공해도 저장되는 hintSetAt은 원래 값이다", async () => {
+      const db = fakeDb(null);
+      vi.mocked(runAnalysis)
+        .mockResolvedValueOnce(outcome(null))
+        .mockResolvedValueOnce(
+          outcome(htmlSpec({ hint: "옛 공고 제목", hintSetAt: stampedNow })),
+        );
+
+      await repairSpec("src-1", LIST_HTML, PAGE_URL, prevWithHint);
+
+      expect(db.inserted()?.spec.hint).toBe("옛 공고 제목");
+      expect(db.inserted()?.spec.hintSetAt).toBe(HINT_SET_AT);
+    });
+
+    it("힌트 없이 성공해도 사용자가 입력한 힌트와 입력 시각을 지우지 않는다", async () => {
+      const db = fakeDb(null);
+      vi.mocked(runAnalysis).mockResolvedValue(outcome(htmlSpec()));
+
+      await repairSpec("src-1", LIST_HTML, PAGE_URL, prevWithHint);
+
+      expect(db.inserted()?.spec.hint).toBe("옛 공고 제목");
+      expect(db.inserted()?.spec.hintSetAt).toBe(HINT_SET_AT);
+    });
+
+    it("hintSetAt이 없는 구버전 스펙은 재시도로 성공해도 시각이 생기지 않는다", async () => {
+      const db = fakeDb(null);
+      vi.mocked(runAnalysis)
+        .mockResolvedValueOnce(outcome(null))
+        .mockResolvedValueOnce(
+          outcome(htmlSpec({ hint: "옛 공고 제목", hintSetAt: stampedNow })),
+        );
+
+      await repairSpec("src-1", LIST_HTML, PAGE_URL, {
+        strategy: "html",
+        hint: "옛 공고 제목",
+      });
+
+      expect(vi.mocked(runAnalysis).mock.calls[1][0].hintSetAt).toBeUndefined();
+      expect(db.inserted()?.spec.hint).toBe("옛 공고 제목");
+      expect(db.inserted()?.spec).not.toHaveProperty("hintSetAt");
+    });
+
+    it("힌트가 없던 소스의 새 스펙에는 hint와 hintSetAt이 없다", async () => {
+      const db = fakeDb(null);
+      vi.mocked(runAnalysis).mockResolvedValue(outcome(htmlSpec()));
+
+      await repairSpec("src-1", LIST_HTML, PAGE_URL, { strategy: "html" });
+
+      expect(db.inserted()?.spec).not.toHaveProperty("hint");
+      expect(db.inserted()?.spec).not.toHaveProperty("hintSetAt");
+    });
+  });
+
+  it("기존 render=true가 새 스펙에 유지된다", async () => {
     const db = fakeDb(null);
-    vi.mocked(enrichWithLlm).mockImplementation(async (args) => llmResult(args.base!.spec));
+    vi.mocked(runAnalysis).mockResolvedValue(outcome(htmlSpec()));
     const prev: CrawlSpec = { strategy: "html", itemSelector: "li", render: true };
 
     await repairSpec("src-1", LIST_HTML, PAGE_URL, prev);
@@ -168,40 +276,68 @@ describe("repairSpec", () => {
     expect(db.inserted()?.json).toContain('"render":true');
   });
 
-  it("구제 모드로 복구된 스펙에도 기존 render=true와 hint가 유지된다", async () => {
+  // 프로파일(어떻게 가져오는가)과 스펙(무엇을 뽑는가)은 수명이 다르다. 스펙을 새 버전으로
+  // 교체하면서 측정한 렌더링 대기 설정을 덮어쓰면 설계 §1-3의 사고(렌더링이 필요한 소스가
+  // 정적 수집으로 내려가 조용히 0건)가 재발한다.
+  it("스펙을 교체해도 fetch_profile을 덮어쓰지 않는다", async () => {
     const db = fakeDb(null);
-    // 구제 결과에는 render/hint가 없다 — enrichWithLlm의 실제 동작과 동일.
-    vi.mocked(enrichWithLlm).mockResolvedValue(
-      llmResult({
-        strategy: "html",
-        itemSelector: "li.row",
-        fields: { org: { selector: ".org", type: "text", label: "기관" } },
-        fieldSource: "llm",
-      }),
-    );
-    const prev: CrawlSpec = { strategy: "html", itemSelector: "li", render: true, hint: "공지" };
+    vi.mocked(runAnalysis).mockResolvedValue(outcome(htmlSpec()));
 
-    const out = await repairSpec("src-1", EMPTY_HTML, PAGE_URL, prev);
+    const out = await repairSpec("src-1", LIST_HTML, PAGE_URL, prevWithHint);
 
-    expect(vi.mocked(enrichWithLlm).mock.calls[0][0].base).toBeNull();
-    expect(out?.spec.render).toBe(true);
-    const saved = db.inserted();
-    expect(saved?.spec.render).toBe(true);
-    expect(saved?.spec.hint).toBe("공지");
-    expect(saved?.spec.fieldSource).toBe("llm");
+    expect(out).not.toBeNull();
+    expect(db.inserted()?.method).toBe("self-repair");
+    const sqls = db.query.mock.calls.map((c) => String(c[0]));
+    expect(sqls).not.toContain(sourcesSql.updateFetchProfile);
+    for (const sql of sqls) expect(sql).not.toMatch(/fetch_profile/i);
+    // 새 스펙은 프로파일과 같은 트랜잭션으로 묶이지 않는다 — 스펙만 쓴다.
+    expect(db.transaction).not.toHaveBeenCalled();
   });
 
-  it("enrich가 rows 0건을 돌려주면 복구 실패로 본다", async () => {
-    const db = fakeDb(null);
-    vi.mocked(enrichWithLlm).mockResolvedValue({
-      ...llmResult({ strategy: "html", itemSelector: "li" }),
-      rows: [],
+  describe("실패는 예외로 새지 않는다", () => {
+    it("분석이 던져도 null을 반환한다 (힌트가 있으면 재시도까지 한다)", async () => {
+      const db = fakeDb(null);
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.mocked(runAnalysis).mockRejectedValue(new Error("sk-live-SECRET provider down"));
+
+      await expect(repairSpec("src-1", LIST_HTML, PAGE_URL, prevWithHint)).resolves.toBeNull();
+
+      expect(runAnalysis).toHaveBeenCalledTimes(2);
+      expect(db.inserted()).toBeNull();
+      errorLog.mockRestore();
     });
 
-    const out = await repairSpec("src-1", LIST_HTML, PAGE_URL, null);
+    it("첫 시도가 던지면 저장된 힌트로 재시도해 복구할 수 있다", async () => {
+      fakeDb(null);
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.mocked(runAnalysis)
+        .mockRejectedValueOnce(new Error("boom"))
+        .mockResolvedValueOnce(outcome(htmlSpec()));
 
-    expect(out).toBeNull();
-    expect(db.inserted()).toBeNull();
+      await expect(
+        repairSpec("src-1", LIST_HTML, PAGE_URL, prevWithHint),
+      ).resolves.not.toBeNull();
+      errorLog.mockRestore();
+    });
+
+    it("분석이 행을 0건 돌려주면 복구 실패로 본다", async () => {
+      const db = fakeDb(null);
+      vi.mocked(runAnalysis).mockResolvedValue({ ...outcome(htmlSpec()), rows: [] });
+
+      expect(await repairSpec("src-1", LIST_HTML, PAGE_URL, null)).toBeNull();
+      expect(db.inserted()).toBeNull();
+    });
+
+    it("JSON-LD(structured) 스펙은 html 수집 경로가 읽지 못하므로 받지 않는다", async () => {
+      const db = fakeDb(null);
+      vi.mocked(runAnalysis).mockResolvedValue({
+        ...outcome({ strategy: "structured" }),
+        strategy: "structured",
+      });
+
+      expect(await repairSpec("src-1", LIST_HTML, PAGE_URL, null)).toBeNull();
+      expect(db.inserted()).toBeNull();
+    });
   });
 });
 
@@ -605,7 +741,7 @@ describe("collectSource - 수집 프로파일", () => {
   });
 
   it("정기 수집 경로에서 LLM을 호출하지 않는다", async () => {
-    // CRAWL-03: 추출이 성공하는 일반 수집에서 readPage/chatJson/enrich가 모두 불리지 않는다.
+    // CRAWL-03: 추출이 성공하는 일반 수집에서 readPage/chatJson/runAnalysis가 모두 불리지 않는다.
     fakeCollectDb({
       fetch_profile: { mode: "rendered", settleMs: 2000, measuredAt: MEASURED_AT },
     });
@@ -618,6 +754,6 @@ describe("collectSource - 수집 프로파일", () => {
     expect(out.newCount).toBe(5);
     expect(readPage).not.toHaveBeenCalled();
     expect(chatJson).not.toHaveBeenCalled();
-    expect(enrichWithLlm).not.toHaveBeenCalled();
+    expect(runAnalysis).not.toHaveBeenCalled();
   });
 });

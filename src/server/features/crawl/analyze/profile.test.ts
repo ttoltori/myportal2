@@ -126,6 +126,54 @@ describe("buildFetchProfile", () => {
   });
 });
 
+// JSON-LD ItemList를 담은 문서. 항목이 n개이고 itemListElement가 3개 미만이면 parseJsonLdList가 null이다.
+const jsonLdHtml = (n: number): string => {
+  const items = Array.from({ length: n }, (_, i) => ({
+    "@type": "ListItem",
+    position: i + 1,
+    url: `https://example.kr/p/${i}`,
+    name: `2026년 지원사업 공고 ${i}`,
+  }));
+  const data = { "@type": "ItemList", itemListElement: items };
+  return `<html><body><script type="application/ld+json">${JSON.stringify(data)}</script></body></html>`;
+};
+
+const structuredSpec: CrawlSpec = { strategy: "structured" };
+
+describe("buildFetchProfile - structured", () => {
+  const buildStructured = (over: Partial<Parameters<typeof buildFetchProfile>[0]> = {}) =>
+    build({
+      spec: structuredSpec,
+      strategy: "structured",
+      staticHtml: jsonLdHtml(10),
+      renderedHtml: jsonLdHtml(10),
+      ...over,
+    });
+
+  // 이전에는 applySpec이 JSON-LD 스펙에서 양쪽 0건을 내 항상 rendered였다.
+  it("정적 HTML에도 JSON-LD가 있으면 mode=static이다", () => {
+    expect(buildStructured().mode).toBe("static");
+  });
+
+  it("정적 HTML에 JSON-LD가 없고 렌더 DOM에만 있으면 mode=rendered다", () => {
+    const p = buildStructured({ staticHtml: "<html><body></body></html>" });
+    expect(p.mode).toBe("rendered");
+    // JSON-LD 전략에는 항목 셀렉터가 없으므로 기다릴 셀렉터를 담지 않는다.
+    expect(p.waitForSelector).toBeUndefined();
+  });
+
+  it("정적 항목 수가 렌더 항목 수의 0.8 미만이면 mode=rendered다", () => {
+    expect(buildStructured({ staticHtml: jsonLdHtml(7), renderedHtml: jsonLdHtml(10) }).mode).toBe(
+      "rendered",
+    );
+  });
+
+  it("렌더 DOM에서도 JSON-LD가 없으면 mode=rendered다", () => {
+    const empty = "<html><body></body></html>";
+    expect(buildStructured({ staticHtml: empty, renderedHtml: empty }).mode).toBe("rendered");
+  });
+});
+
 describe("profileFromLegacySpec", () => {
   it("spec.render가 true면 mode=rendered", () => {
     expect(profileFromLegacySpec({ ...spec, render: true }).mode).toBe(

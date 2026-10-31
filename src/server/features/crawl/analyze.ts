@@ -218,6 +218,9 @@ export interface ListingAnalysis {
   // LLM이 제안하고 페이지의 실제 앵커로 검증된 부모 목록 후보. 폴백 경로에서는 비어 있다.
   listCandidates: ParentCandidate[];
   pageKind: PageKind;
+  // 입력된 힌트가 분석한 페이지의 개요에 매칭되는가. 힌트가 없었거나 개요를 만들기 전에
+  // 끝난 분석(robots 금지·접근 실패·피드)이면 null. 재분석이 저장된 힌트의 낡음을 알리는 근거다.
+  hintMatched: boolean | null;
 }
 
 const NO_SUGGESTION: AnalysisOutcome["suggested"] = {
@@ -372,6 +375,7 @@ export async function analyzeListing(args: {
     suggested: NO_SUGGESTION,
     listCandidates: [],
     pageKind: "unknown",
+    hintMatched: null,
   });
 
   // 3. robots.txt
@@ -415,6 +419,7 @@ export async function analyzeListing(args: {
       suggested: NO_SUGGESTION,
       listCandidates: [],
       pageKind: "list",
+      hintMatched: null,
     };
   }
 
@@ -458,7 +463,8 @@ export async function analyzeListing(args: {
 
   // 힌트가 있는데 현재 페이지에서 매칭되지 않거나 목록을 못 찾았으면, 사용자가 새 힌트를
   // 직접 고를 수 있도록 렌더된 페이지의 텍스트를 함께 준다.
-  const hintMissed = Boolean(hint) && (!outcome || !hintMatchesOutline(outline.text, hint ?? ""));
+  const hintMatched = hint ? hintMatchesOutline(outline.text, hint) : null;
+  const hintMissed = Boolean(hint) && (!outcome || hintMatched === false);
 
   return {
     steps,
@@ -473,6 +479,7 @@ export async function analyzeListing(args: {
     suggested: analysis.suggested,
     listCandidates: analysis.listCandidates,
     pageKind: analysis.pageKind,
+    hintMatched,
   };
 }
 

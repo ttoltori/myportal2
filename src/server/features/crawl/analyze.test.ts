@@ -509,6 +509,12 @@ describe("analyzeListing", () => {
     expect((r.outcome?.spec as CrawlSpec).hintSetAt).toBe(stored);
   });
 
+  it("hintMatched는 힌트가 현재 개요에 있으면 true, 없으면 false, 힌트가 없으면 null이다", async () => {
+    expect((await analyzeListing({ ...args, hint: "아이디어 공모전" })).hintMatched).toBe(true);
+    expect((await analyzeListing({ ...args, hint: "사라진 공고 제목" })).hintMatched).toBe(false);
+    expect((await analyzeListing(args)).hintMatched).toBeNull();
+  });
+
   it("LLM이 어떤 방식으로 실패해도 예외를 던지지 않는다", async () => {
     vi.mocked(readPage).mockRejectedValue(new Error("boom"));
     await expect(analyzeListing(args)).resolves.toMatchObject({ blocked: null, fieldSource: "heuristic" });

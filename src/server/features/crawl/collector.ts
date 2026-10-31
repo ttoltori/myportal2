@@ -13,7 +13,8 @@ import {
   type CrawlSpec,
   type ExtractedRow,
 } from "./extract";
-import { enrichWithLlm } from "./llm/enrich";
+import { buildPageOutline } from "./analyze/page-outline";
+import { runAnalysis } from "./analyze/run-analysis";
 import { matchNewItemsForSubscribers } from "../keywords/match";
 import { clusterItems } from "./cluster";
 import { dedupeHash, normalizeUrl, safeNormalize } from "./url";
@@ -90,29 +91,87 @@ export async function extractRows(
 // ── spec self-repair ───────────────────────────────────
 // When extraction keeps yielding zero rows, regenerate the DOM spec once
 // and retry. A successful repair is persisted as a new spec version.
+// 새 스펙만 저장한다. sources.fetch_profile(어떻게 가져오는가)은 스펙과 수명이 달라
+// 건드리지 않는다 — 덮어쓰면 측정한 렌더링 대기 설정이 사라져 수집이 다시 어긋난다.
+
+interface RepairAttempt {
+  spec: CrawlSpec;
+  rows: ExtractedRow[];
+}
+
+// 어떤 실패도 예외로 새지 않게 null로 돌려준다 — 자가복구가 실패해도 수집은 계속된다.
+// 자가복구는 html 전략 소스에서만 돌고 수집기는 그 스펙을 applySpec으로 읽으므로,
+// JSON-LD 폴백(structured) 스펙은 다음 수집에서 0건이 되어 복구가 반복되기에 받지 않는다.
+async function analyzeForRepair(args: {
+  sourceId: string;
+  html: string;
+  finalUrl: string;
+  hint?: string;
+  hintSetAt?: string;
+}): Promise<RepairAttempt | null> {
+  try {
+    const analysis = await runAnalysis({
+      html: args.html,
+      pageUrl: args.finalUrl,
+      outline: buildPageOutline(args.html),
+      hint: args.hint,
+      hintSetAt: args.hintSetAt,
+      // 시스템 일별 한도를 쓴다.
+      userId: null,
+      sourceId: args.sourceId,
+      purpose: "self-repair",
+      // 무인 경로의 보수 호출은 기대 이득이 낮고 시스템 한도를 같이 쓴다. 호출 상한은
+      // 힌트 없이 1회 + 힌트로 1회 = 최대 2회.
+      allowRepair: false,
+    });
+    if (!analysis.spec || analysis.rows.length === 0 || analysis.strategy !== "html") return null;
+    return { spec: analysis.spec, rows: analysis.rows };
+  } catch (err) {
+    console.error("[repair] 자가복구 분석 실패:", err);
+    return null;
+  }
+}
+
+// 힌트는 분석 시점에 보이던 제목의 일부라 시간이 지나면 페이지에서 사라진다. 낡은 힌트로
+// 먼저 시도하면 힌트 영역을 못 찾는 실패가 매 수집마다 반복되므로 힌트 없이 먼저 시도하고,
+// 실패했을 때만 저장된 힌트를 단서로 다시 시도한다.
+async function analyzeWithHintLast(
+  sourceId: string,
+  html: string,
+  finalUrl: string,
+  prevSpec?: CrawlSpec | null,
+): Promise<RepairAttempt | null> {
+  const withoutHint = await analyzeForRepair({ sourceId, html, finalUrl });
+  if (withoutHint || !prevSpec?.hint) return withoutHint;
+  // 원래 입력 시각을 넘긴다. 생략하면 "지금"으로 찍혀 낡음 표시가 사라진다.
+  return analyzeForRepair({
+    sourceId,
+    html,
+    finalUrl,
+    hint: prevSpec.hint,
+    hintSetAt: prevSpec.hintSetAt,
+  });
+}
+
 export async function repairSpec(
   sourceId: string,
   html: string,
   finalUrl: string,
   prevSpec?: CrawlSpec | null,
 ): Promise<{ spec: CrawlSpec; rows: ExtractedRow[] } | null> {
-  const heuristic = generateSpec(html, finalUrl, prevSpec?.hint);
-  // 휴리스틱이 실패해도 LLM 구제를 시도한다. userId가 null이면 시스템 상한을 쓴다.
-  const enriched = await enrichWithLlm({
-    purpose: "self-repair",
-    userId: null,
-    sourceId,
-    html,
-    pageUrl: finalUrl,
-    base: heuristic ? { spec: heuristic.spec, rows: heuristic.rows } : null,
-  });
-  if (!enriched || enriched.rows.length === 0) return null;
+  const regenerated = await analyzeWithHintLast(sourceId, html, finalUrl, prevSpec);
+  if (!regenerated) return null;
 
-  // 구제 모드 스펙에는 render/hint가 없으므로 이전 스펙 값을 다시 입힌다.
+  // 새 스펙에는 이전 스펙의 render/hint가 없으므로 다시 입힌다.
   // 렌더링이 필요한 소스가 정적 HTML로 되돌아가 영구히 0건이 되는 것을 막는다.
-  const regenerated = { spec: enriched.spec, rows: enriched.rows };
   if (prevSpec?.render) regenerated.spec.render = true;
-  if (prevSpec?.hint && !regenerated.spec.hint) regenerated.spec.hint = prevSpec.hint;
+  // 힌트 없이 성공했어도 사용자가 입력한 값은 지우지 않는다. 입력 시각을 그대로 이어야
+  // 재분석 화면이 이 힌트의 나이를 계속 보여 줄 수 있다.
+  if (prevSpec?.hint) {
+    regenerated.spec.hint = prevSpec.hint;
+    if (prevSpec.hintSetAt) regenerated.spec.hintSetAt = prevSpec.hintSetAt;
+    else delete regenerated.spec.hintSetAt;
+  }
 
   const db = getDb();
   const { rows: versions } = await db.query<{ v: string }>(

@@ -10,11 +10,12 @@ import { AppError, errorCodes, validationError } from "../../errors/error-codes"
 import { analyzeListing, fieldsFromRows } from "../crawl/analyze";
 import { extractRows } from "../crawl/collector";
 import type { CrawlSpec, ExtractedRow } from "../crawl/extract";
+import { fetchProfileSchema, type FetchProfile } from "../crawl/analyze/profile";
 import { fetchPage } from "../crawl/fetcher";
 import { renderPage } from "../crawl/render";
 import { dedupeHash, safeNormalize } from "../crawl/url";
 import { reanalyzeSql } from "./reanalyze.sql";
-import { findSubscribedSource } from "./sources";
+import { findSubscribedSource, saveFetchProfile } from "./sources";
 import { sourcesSql } from "./sources.sql";
 
 const PREVIEW_ROW_LIMIT = 10;
@@ -47,13 +48,29 @@ function toSourceField(f: FieldRow): SourceField {
   };
 }
 
-// 저장된 활성 스펙의 hint. 목록 영역을 다시 같은 곳으로 찾게 하는 기본값이다.
-// pg는 jsonb를 이미 파싱된 객체로 반환하므로 문자열일 때만 JSON.parse한다.
-function storedHintOf(spec: unknown): string | undefined {
+interface StoredHint {
+  value: string;
+  // 힌트를 입력한 시각. hintSetAt이 없는 구버전 스펙이면 null — 언제 입력했는지 알 수 없다.
+  setAt: string | null;
+}
+
+function parseStoredSpec(spec: unknown): Record<string, unknown> | null {
+  // pg는 jsonb를 이미 파싱된 객체로 반환하므로 문자열일 때만 JSON.parse한다.
   const parsed: unknown = typeof spec === "string" ? JSON.parse(spec) : spec;
-  if (typeof parsed !== "object" || parsed === null) return undefined;
-  const hint = (parsed as { hint?: unknown }).hint;
-  return typeof hint === "string" && hint.length > 0 ? hint : undefined;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  return parsed as Record<string, unknown>;
+}
+
+// 저장된 활성 스펙의 hint와 입력 시각. 목록 영역을 다시 같은 곳으로 찾게 하는 기본값이다.
+function storedHintOf(spec: unknown): StoredHint | undefined {
+  const parsed = parseStoredSpec(spec);
+  if (!parsed) return undefined;
+  const { hint, hintSetAt } = parsed;
+  if (typeof hint !== "string" || hint.length === 0) return undefined;
+  // 날짜로 읽히지 않는 값은 경과 일수를 계산할 수 없으므로 모르는 것으로 취급한다.
+  const validSetAt =
+    typeof hintSetAt === "string" && !Number.isNaN(Date.parse(hintSetAt)) ? hintSetAt : null;
+  return { value: hint, setAt: validSetAt };
 }
 
 // 등록된 소스를 다시 분석해 미리보기를 만든다. 조회만 하고 저장하지 않는다 —
@@ -74,27 +91,33 @@ export async function reanalyzeSource(
     db.query<FieldRow>(sourcesSql.fieldsForSource, [sourceId]),
   ]);
 
+  const stored = activeSpec.rows[0] ? storedHintOf(activeSpec.rows[0].spec) : undefined;
   // hint 생략은 "저장된 것을 쓴다", 빈 문자열은 "힌트 없이 간다"는 명시적 의사다.
   // 둘을 같게 취급하면 사용자가 낡은 힌트를 지울 방법이 없어진다.
   const effectiveHint =
-    hint === undefined
-      ? activeSpec.rows[0]
-        ? storedHintOf(activeSpec.rows[0].spec)
-        : undefined
-      : hint === ""
-        ? undefined
-        : hint;
+    hint === undefined ? stored?.value : hint === "" ? undefined : hint;
+  // 화면이 저장된 힌트를 입력란에 채워 보내므로, 값이 같으면 사용자가 새로 입력한 게 아니라
+  // 저장된 것을 그대로 쓴 것이다. 이때만 원래 입력 시각을 이어 간다.
+  const reusesStored = stored !== undefined && effectiveHint === stored.value;
 
   const listing = await analyzeListing({
     userId,
     url: String(source.normalized_url ?? source.url),
     hint: effectiveHint,
+    // 입력 시각을 넘기지 않으면 재분석할 때마다 "지금"으로 덮어써져 낡음 표시가 영구히 사라진다.
+    hintSetAt: reusesStored ? (stored.setAt ?? undefined) : undefined,
     sourceId,
     // 보강·구제 양쪽에 rebuild가 그대로 쓰이도록 analyze-fields를 넘기지 않는다.
     purpose: "rebuild",
   });
 
   const currentFields = fields.rows.map(toSourceField);
+  // 개요를 만들기 전에 끝난 분석(접근 실패·피드)은 hintMatched가 null이라 판정할 수 없다.
+  // 거짓 경고를 띄우지 않으려고 그때는 알리지 않는다.
+  const storedHint =
+    reusesStored && listing.hintMatched !== null
+      ? { value: stored.value, setAt: stored.setAt, matchesPage: listing.hintMatched }
+      : null;
   const base = {
     steps: listing.steps,
     pageTitle: listing.pageTitle,
@@ -110,7 +133,7 @@ export async function reanalyzeSource(
       preview: null,
       fieldSource: null,
       errorCode: listing.blocked.code,
-      storedHint: null,
+      storedHint,
     };
   }
 
@@ -126,7 +149,7 @@ export async function reanalyzeSource(
       preview: null,
       fieldSource: null,
       errorCode: errorCodes.PAGE_TYPE_UNKNOWN,
-      storedHint: null,
+      storedHint,
     };
   }
 
@@ -145,10 +168,11 @@ export async function reanalyzeSource(
       })),
       fetchStrategy: outcome.strategy,
       spec: outcome.spec,
+      profile: listing.profile,
     },
     fieldSource: listing.fieldSource,
     errorCode: null,
-    storedHint: null,
+    storedHint,
   };
 }
 
@@ -323,6 +347,52 @@ async function backfillItems(
   return { backfilled, inserted };
 }
 
+// 클라이언트가 보낸 프로파일은 신뢰하지 않고 다시 검증한다. 프로파일은 수집 최적화
+// 정보일 뿐이라, 형태가 맞지 않다고 적용 전체를 실패시키지 않고 기존 프로파일을 둔 채 진행한다.
+// 원본 값은 임의 데이터라 로그에 싣지 않고 실패 위치와 코드만 요약한다.
+function parseClientProfile(raw: unknown, sourceId: string): FetchProfile | null {
+  if (raw == null) return null;
+  const parsed = fetchProfileSchema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  const reasons = parsed.error.issues
+    .slice(0, 5)
+    .map((i) => `${i.path.join(".") || "(root)"}:${i.code}`)
+    .join(", ");
+  console.error(
+    `[apply-spec] 수집 프로파일 검증 실패, 기존 프로파일 유지: source=${sourceId} issues=${reasons}`,
+  );
+  return null;
+}
+
+// 저장할 스펙의 hint와 hintSetAt을 정한다. 불변식: hintSetAt은 힌트 문자열이 바뀔 때만 갱신된다.
+// 재분석 화면은 저장된 힌트를 입력란에 채워 항상 문자열로 보내므로, "값이 왔다"를 새 입력으로
+// 읽으면 적용할 때마다 시각이 리셋되어 낡음 경고가 영구히 사라진다. 그래서 클라이언트가
+// 무엇을 보내든 서버가 저장된 힌트와 값을 비교해 정한다. 클라이언트 spec에 실려 온
+// hint/hintSetAt은 믿지 않고 버린다.
+//  - 힌트가 없다(생략·빈 문자열) → hint와 hintSetAt을 모두 남기지 않는다.
+//  - 저장된 힌트와 같은 문자열 → 저장된 hintSetAt을 보존한다. 구버전 스펙처럼 없었다면
+//    없는 채로 둔다(없던 시각이 "지금"으로 생기면 오래된 힌트가 방금 입력된 것처럼 보인다).
+//  - 다른 문자열 → 지금이 실제 입력 시점이다.
+async function stampHint(
+  sourceId: string,
+  spec: Record<string, unknown>,
+  inputHint: string | undefined,
+): Promise<Record<string, unknown>> {
+  const rest = { ...spec };
+  delete rest.hint;
+  delete rest.hintSetAt;
+  if (!inputHint) return rest;
+
+  const active = await getDb().query<{ spec: unknown }>(sourcesSql.latestActiveSpec, [sourceId]);
+  const stored = active.rows[0] ? storedHintOf(active.rows[0].spec) : undefined;
+  if (stored?.value === inputHint) {
+    return stored.setAt === null
+      ? { ...rest, hint: inputHint }
+      : { ...rest, hint: inputHint, hintSetAt: stored.setAt };
+  }
+  return { ...rest, hint: inputHint, hintSetAt: new Date().toISOString() };
+}
+
 // 재분석 미리보기에서 사용자가 확정한 스펙·필드를 저장한다.
 // 클라이언트가 보낸 spec을 신뢰하지 않고 추출을 다시 돌려 검증한 뒤에만 저장한다.
 export async function applySpecForSource(
@@ -347,8 +417,9 @@ export async function applySpecForSource(
   }
   const backfillFailed = extracted === null;
 
-  // repairSpec이 이후 자가복구에서 같은 영역을 다시 찾도록 hint를 스펙에 싣는다.
-  const specToSave = input.hint ? { ...spec, hint: input.hint } : spec;
+  // repairSpec이 이후 자가복구에서 힌트를 단서로 쓸 수 있도록 hint를 스펙에 싣는다.
+  const specToSave = await stampHint(sourceId, spec, input.hint);
+  const profile = parseClientProfile(input.profile, sourceId);
   // 일시정지는 사용자의 의도이므로 적용이 풀어서는 안 된다.
   const status = source.status === SOURCE_STATUS_PAUSED ? SOURCE_STATUS_PAUSED : SOURCE_STATUS_OK;
   // 재분석이 새로 발견한 피드는 spec.feedUrl에만 있다. sources.feed_url에 옮기지
@@ -383,6 +454,9 @@ export async function applySpecForSource(
         f.visible,
       ]);
     }
+
+    // 프로파일은 스펙과 수명이 달라 따로 저장하되, 스펙과 함께 커밋되게 같은 트랜잭션에 둔다.
+    if (profile) await saveFetchProfile(sourceId, profile, tx);
 
     // 백필(스펙 §5 3-d). 페이지 조회가 실패했으면 extracted가 null이라 건너뛴다.
     const backfill =
