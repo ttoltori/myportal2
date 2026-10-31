@@ -853,3 +853,68 @@ describe("과포함은 이 단계가 보증하지 않는다 (검증 단계의 �
     expect(result?.spec.itemSelector).toBe("div.row");
   });
 });
+
+describe("제목 셀렉터를 만들 수 없을 때", () => {
+  it("제목이 항목 루트의 직계 텍스트여도 null이 아니라 titleSelector 없는 스펙을 만든다", () => {
+    const html = page(`
+      <ul class="list">
+        <li>2026년 지원사업 공고 <span class="date">2026-01-05</span></li>
+        <li>데이터 활용 기업 모집 <span class="date">2026-01-04</span></li>
+      </ul>`);
+    const titles = ["2026년 지원사업 공고", "데이터 활용 기업 모집"];
+    const dates = ["2026-01-05", "2026-01-04"];
+    const { outline, result } = synth(html, (o) =>
+      titles.map((title, i) => ({
+        // 텍스트 노드의 ref는 부모 요소(li)다. 그 li가 항목 루트 자신이다.
+        titleRef: o.refs.findIndex((el) => el?.tagName === "LI" && fold(el.textContent).startsWith(title)),
+        titleText: title,
+        fields: [field("date_text", refOf(o, dates[i]), dates[i])],
+      })),
+    );
+
+    expect(outline.refs.filter((el) => el?.tagName === "LI")).toHaveLength(2);
+    expect(result).not.toBeNull();
+    expect(result?.spec.itemSelector).toBe("ul.list > li");
+    expect(result?.spec.titleSelector).toBeUndefined();
+    expect(result?.spec.fields?.date_text?.selector).toBe("span.date");
+    expect(result?.dropped).toEqual([
+      { key: "title", reason: expect.stringContaining("titleSelector를 생략") },
+      { key: "link", reason: expect.stringContaining("a[href]") },
+    ]);
+  });
+
+  it("제목 상대 셀렉터가 항목마다 달라 일반화되지 않으면 생략하고, 기존 추측이 제목·필드를 뽑는다", () => {
+    const html = page(`
+      <ul class="list">
+        <li><a href="/a/1">첫 번째 공고 제목입니다</a><span class="org">기관 하나</span></li>
+        <li><a href="/a/2"><span class="t">두 번째 공고 제목입니다</span></a><span class="org">기관 둘</span></li>
+      </ul>`);
+    const { result } = synth(html, (o) =>
+      SIMPLE_TITLES.slice(0, 2).map((title, i) => ({
+        // 둘째 항목은 앵커가 아니라 그 안쪽 span을 가리켜 첫 항목과 경로의 끝이 달라진다.
+        titleRef: o.refs.findIndex((el) => el?.tagName === (i === 0 ? "A" : "SPAN") && fold(el.textContent) === title),
+        titleText: title,
+        fields: [field("organization", refOf(o, SIMPLE_ORGS[i]), SIMPLE_ORGS[i])],
+      })),
+    );
+
+    expect(result?.spec.titleSelector).toBeUndefined();
+    expect(result?.spec.linkSelector).toBe("a:nth-child(1)");
+    expect(result?.dropped).toEqual([{ key: "title", reason: expect.stringContaining("titleSelector를 생략") }]);
+    const rows = applySpec(html, result!.spec, PAGE_URL);
+    expect(rows.map(({ title, link, attrs }) => ({ title, link, attrs }))).toEqual([
+      { title: SIMPLE_TITLES[0], link: "https://www.example.kr/a/1", attrs: { organization: "기관 하나" } },
+      { title: SIMPLE_TITLES[1], link: "https://www.example.kr/a/2", attrs: { organization: "기관 둘" } },
+    ]);
+  });
+
+  it("그래도 목록 자체를 못 찾는 경우(itemSelector 불가)는 여전히 null이다", () => {
+    const html = page(`
+      <div><p><a href="/a/1">첫 번째 공고 제목입니다</a></p></div>
+      <section><article><a href="/a/2">두 번째 공고 제목입니다</a></article></section>`);
+    const { result } = synth(html, (o) =>
+      SIMPLE_TITLES.slice(0, 2).map((t) => ({ titleRef: refOf(o, t), titleText: t, fields: [] })),
+    );
+    expect(result).toBeNull();
+  });
+});

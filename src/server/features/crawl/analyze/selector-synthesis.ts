@@ -193,26 +193,36 @@ interface RootPair {
   second: Element;
 }
 
+// 체인에서 공통 조상 C가 있어야 하는 최소 위치. 제목이 C의 직계면 제목 자신이 루트인데,
+// 그것이 항목 컨테이너라는 증거(같은 항목의 다른 필드를 품고 있음)가 있을 때만 허용한다.
+// 증거 없이 허용하면 한 부모 아래 나란한 앵커 두 개가 "항목 두 개"로 둔갑한다.
+const MIN_INDEX_PLAIN = 2;
+const MIN_INDEX_CONTAINER = 1;
+
+function minCommonIndex(isContainer: boolean): number {
+  return isContainer ? MIN_INDEX_CONTAINER : MIN_INDEX_PLAIN;
+}
+
 // 두 제목의 조상 체인이 처음 만나는 공통 조상 C와, 각 제목 쪽에서 C 바로 아래 요소.
-// 제목이 C의 직계(=제목 자신이 루트)거나 C 자신이면 항목 경계를 알 수 없어 null이다.
-function splitAtCommonAncestor(a: Element, b: Element): RootPair | null {
+// 제목이 C 자신이거나 증거 없는 직계면 항목 경계를 알 수 없어 null이다.
+function splitAtCommonAncestor(a: Element, b: Element, aContainer: boolean, bContainer: boolean): RootPair | null {
   const chainA = ancestorChain(a);
   const chainB = ancestorChain(b);
   const ancestorsOfB = new Set(chainB);
   const ia = chainA.findIndex((el) => ancestorsOfB.has(el));
-  if (ia < 2) return null;
+  if (ia < minCommonIndex(aContainer)) return null;
   const common = chainA[ia];
   const ib = chainB.indexOf(common);
-  if (ib < 2) return null;
+  if (ib < minCommonIndex(bContainer)) return null;
   return { common, first: chainA[ia - 1], second: chainB[ib - 1] };
 }
 
 // 세 번째 이후 제목의 루트. C 아래에 있으면 C 바로 아래 요소다.
 // 그리드가 행으로 감싸져 C 밖(다른 행)에 있으면 첫 항목과 같은 높이·태그의 조상을 쓴다.
-function rootBeyondPair(pair: RootPair, firstTitle: Element, title: Element): Element | null {
+function rootBeyondPair(pair: RootPair, firstTitle: Element, title: Element, isContainer: boolean): Element | null {
   const chain = ancestorChain(title);
   const ic = chain.indexOf(pair.common);
-  if (ic >= 2) return chain[ic - 1];
+  if (ic >= minCommonIndex(isContainer)) return chain[ic - 1];
   if (ic >= 0) return null;
 
   const height = ancestorChain(firstTitle).indexOf(pair.first);
@@ -220,18 +230,20 @@ function rootBeyondPair(pair: RootPair, firstTitle: Element, title: Element): El
   return candidate && candidate.tagName === pair.first.tagName ? candidate : null;
 }
 
-// titleEls와 같은 순서의 항목 루트. 세 번째부터는 해소 못 하면 그 자리만 null로 두어
+// titleEls와 같은 순서의 항목 루트. contents[i]는 i번째 항목의 다른 필드·링크 요소로,
+// 제목 요소가 그중 하나를 품고 있으면 제목 요소 자체가 항목 컨테이너다. 세 번째부터는 해소 못 하면 그 자리만 null로 두어
 // 항목 하나의 오보가 전체 합성을 막지 않게 한다. 첫 두 제목이나 세 번째 제목과의
 // 교차 검증이 실패하면 구조를 신뢰할 수 없어 배열 전체를 null로 돌려준다.
-export function resolveItemRoots(titleEls: Element[]): (Element | null)[] | null {
+export function resolveItemRoots(titleEls: Element[], contents: Element[][] = []): (Element | null)[] | null {
   if (titleEls.length < MIN_RESOLVED_ITEMS) return null;
-  const pair = splitAtCommonAncestor(titleEls[0], titleEls[1]);
+  const isContainer = (i: number): boolean => (contents[i] ?? []).some((el) => el !== titleEls[i] && titleEls[i].contains(el));
+  const pair = splitAtCommonAncestor(titleEls[0], titleEls[1], isContainer(0), isContainer(1));
   if (!pair) return null;
 
   const roots: (Element | null)[] = [pair.first, pair.second];
   const seen = new Set<Element>(roots as Element[]);
   for (let i = CROSS_CHECK_INDEX; i < titleEls.length; i++) {
-    const root = rootBeyondPair(pair, titleEls[0], titleEls[i]);
+    const root = rootBeyondPair(pair, titleEls[0], titleEls[i], isContainer(i));
     if (root && seen.has(root)) {
       // 세 번째 제목이 앞선 항목과 같은 루트면 두 제목이 한 항목에 있다는 뜻이라 첫 쌍의 해석이 틀렸을 수 있다.
       if (i === CROSS_CHECK_INDEX) return null;
@@ -416,7 +428,10 @@ export function synthesizeSpec(
   });
   if (items.length < MIN_RESOLVED_ITEMS) return null;
 
-  const roots = resolveItemRoots(items.map((i) => i.title));
+  const roots = resolveItemRoots(
+    items.map((i) => i.title),
+    items.map((i) => [...i.fields.map((f) => f.el), ...(i.linkEl ? [i.linkEl] : [])]),
+  );
   if (!roots) return null;
   const located = locateItems(ctx, items, roots);
 
@@ -424,7 +439,10 @@ export function synthesizeSpec(
   if (!itemSelector) return null;
 
   const titleSelector = generalizeSelector(toSamples(located, (l) => l.item.title));
-  if (!titleSelector) return null;
+  // 제목 셀렉터 하나를 못 만든 것이 목록을 못 찾은 것은 아니다. 생략하면 applyDomSpec이 기존 추측으로 제목을 뽑는다.
+  if (!titleSelector) {
+    drop(ctx, "title", "제목 요소의 상대 셀렉터를 만들 수 없어 titleSelector를 생략했다(제목이 항목 루트 자신이거나 항목마다 구조가 다름)");
+  }
   const linkSelector = synthesizeLinkSelector(ctx, located, pageUrl);
 
   const groups = [...groupByKey(located)];
@@ -442,7 +460,7 @@ export function synthesizeSpec(
     strategy: "html",
     itemSelector,
     fields,
-    titleSelector,
+    ...(titleSelector ? { titleSelector } : {}),
     ...(linkSelector ? { linkSelector } : {}),
     ...(publishedSelector ? { publishedSelector } : {}),
     fieldSource: "llm",
