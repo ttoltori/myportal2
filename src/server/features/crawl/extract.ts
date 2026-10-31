@@ -14,6 +14,12 @@ export interface FieldSelector {
   role?: FieldRole;
 }
 
+// titleSelector에 이 값을 넣으면 "항목 요소 자신의 직계 텍스트"를 제목으로 쓴다.
+// 제목이 <li>제목 <span>…</span></li>처럼 항목의 직계 텍스트인 목록은 querySelector가
+// 후손만 찾으므로 항목 자신을 가리키는 상대 셀렉터가 존재하지 않아 센티넬이 필요하다.
+// 셀렉터 합성이 명시적으로 지정할 때만 켜지며, 이 값이 없는 기존 스펙의 동작은 바뀌지 않는다.
+export const SELF_TITLE_SELECTOR = ":self";
+
 export interface CrawlSpec {
   strategy: "rss" | "structured" | "html";
   feedUrl?: string;
@@ -612,7 +618,17 @@ function queryWithin(el: Element, selector: string | undefined): Element | null 
   }
 }
 
+// 자식 요소(날짜 span 등)의 텍스트가 섞이면 안 되므로 textContent가 아니라 직계 텍스트 노드만 모은다.
+function ownTextTitle(el: Element): string {
+  let out = "";
+  for (const node of el.childNodes) {
+    if (node.nodeType === 3) out += node.textContent ?? "";
+  }
+  return out.replace(/\s+/g, " ").trim().slice(0, 300);
+}
+
 function explicitTitle(el: Element, selector: string | undefined): string {
+  if (selector === SELF_TITLE_SELECTOR) return ownTextTitle(el);
   const target = queryWithin(el, selector);
   return target ? anchorTitle(target).slice(0, 300) : "";
 }

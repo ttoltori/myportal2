@@ -1,6 +1,6 @@
 import type { FieldRole, FieldType } from "@myportal/api-contracts";
 import { commonSelector, relativeSelector } from "../dom-selector";
-import type { CrawlSpec, FieldSelector } from "../extract";
+import { SELF_TITLE_SELECTOR, type CrawlSpec, type FieldSelector } from "../extract";
 import { absolutize } from "../url";
 import type { PageReadResult } from "./llm-read";
 import type { PageOutline } from "./page-outline";
@@ -335,6 +335,22 @@ function toSamples(located: LocatedItem[], pick: (l: LocatedItem) => Element | n
   });
 }
 
+// 제목 셀렉터 하나를 못 만든 것이 목록을 못 찾은 것은 아니므로 null 대신 생략한다.
+// 생략하면 applyDomSpec이 기존 추측으로 제목을 뽑는다.
+function synthesizeTitleSelector(ctx: Context, located: LocatedItem[]): string | null {
+  const selfCount = located.filter((l) => l.item.title === l.root).length;
+  // 상대 셀렉터는 후손만 가리키므로 제목이 항목 자신이면 센티넬로 표현한다.
+  if (selfCount === located.length) return SELF_TITLE_SELECTOR;
+  // 섞인 구조에 센티넬을 쓰면 앵커가 있는 항목의 제목을 직계 텍스트로 덮어 망친다.
+  if (selfCount > 0) {
+    drop(ctx, "title", "일부 항목만 제목이 항목 루트 자신이라 titleSelector를 생략했다");
+    return null;
+  }
+  const selector = generalizeSelector(toSamples(located, (l) => l.item.title));
+  if (!selector) drop(ctx, "title", "항목 사이에 공통 제목 셀렉터를 만들 수 없어 titleSelector를 생략했다");
+  return selector;
+}
+
 // 제목과 링크를 항상 함께 지정한다. linkSelector가 없으면 applyDomSpec이 항목에서 가장 긴 앵커를
 // 링크로 추측하므로, 긴 요약 앵커가 있는 항목에서 제목과 다른 페이지로 이동하게 된다.
 function synthesizeLinkSelector(ctx: Context, located: LocatedItem[], pageUrl: string): string | null {
@@ -438,11 +454,7 @@ export function synthesizeSpec(
   const itemSelector = commonSelector(located.map((l) => l.root));
   if (!itemSelector) return null;
 
-  const titleSelector = generalizeSelector(toSamples(located, (l) => l.item.title));
-  // 제목 셀렉터 하나를 못 만든 것이 목록을 못 찾은 것은 아니다. 생략하면 applyDomSpec이 기존 추측으로 제목을 뽑는다.
-  if (!titleSelector) {
-    drop(ctx, "title", "제목 요소의 상대 셀렉터를 만들 수 없어 titleSelector를 생략했다(제목이 항목 루트 자신이거나 항목마다 구조가 다름)");
-  }
+  const titleSelector = synthesizeTitleSelector(ctx, located);
   const linkSelector = synthesizeLinkSelector(ctx, located, pageUrl);
 
   const groups = [...groupByKey(located)];

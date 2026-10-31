@@ -8,6 +8,7 @@ import {
   parseDate,
   parseFeed,
   parseJsonLdList,
+  SELF_TITLE_SELECTOR,
   type CrawlSpec,
   type ExtractedRow,
 } from "./extract";
@@ -563,5 +564,70 @@ describe("fieldsFromRows", () => {
       "published",
     ]);
     expect(fields.slice(0, 3).map((f) => f.sortOrder)).toEqual([0, 1, 2]);
+  });
+});
+
+describe("SELF_TITLE_SELECTOR (항목 자신의 직계 텍스트를 제목으로)", () => {
+  const pageUrl = "https://x.kr/list";
+  const html = `<html><body><ul class="list">
+    <li>2026년 지원사업 공고 <span class="date">2026-01-05</span></li>
+    <li>데이터 활용 기업 모집 <span class="date">2026-01-04</span></li>
+    <li>  수출 바우처
+        추가 모집  <span class="date">2026-01-03</span> 안내</li>
+  </ul></body></html>`;
+  const base: CrawlSpec = { strategy: "html", itemSelector: "ul.list > li" };
+
+  it("직계 텍스트 노드만 제목이 되고 자식 요소(날짜)의 텍스트는 섞이지 않는다", () => {
+    const rows = applySpec(
+      html,
+      {
+        ...base,
+        titleSelector: SELF_TITLE_SELECTOR,
+        publishedSelector: "span.date",
+        fields: { date_text: { selector: "span.date" } },
+      },
+      pageUrl,
+    );
+
+    // 공백은 접고, 자식 요소 앞뒤의 직계 텍스트는 이어 붙인다.
+    expect(rows.map((r) => r.title)).toEqual([
+      "2026년 지원사업 공고",
+      "데이터 활용 기업 모집",
+      "수출 바우처 추가 모집 안내",
+    ]);
+    expect(rows.map((r) => r.attrs.date_text)).toEqual(["2026-01-05", "2026-01-04", "2026-01-03"]);
+    expect(rows[0].publishedAt).toContain("2026-01-05");
+  });
+
+  it("직계 텍스트가 300자를 넘으면 자른다", () => {
+    const long = "가".repeat(400);
+    const rows = applySpec(
+      `<html><body><ul class="list"><li>${long}<b>x</b></li></ul></body></html>`,
+      { ...base, titleSelector: SELF_TITLE_SELECTOR },
+      pageUrl,
+    );
+    expect(rows[0].title).toHaveLength(300);
+  });
+
+  it("직계 텍스트가 비면 기존 폴백(가장 긴 앵커)으로 내려가고, 그것도 없으면 항목을 건너뛴다", () => {
+    const mixed = `<html><body><ul class="list">
+      <li><a href="/v/1">앵커로만 이루어진 제목</a><span class="date">2026-01-05</span></li>
+      <li><span class="date">2026-01-04</span></li>
+      <li>텍스트 제목 항목 <span class="date">2026-01-03</span></li>
+    </ul></body></html>`;
+    const rows = applySpec(mixed, { ...base, titleSelector: SELF_TITLE_SELECTOR }, pageUrl);
+
+    expect(rows.map((r) => r.title)).toEqual(["앵커로만 이루어진 제목", "텍스트 제목 항목"]);
+    expect(rows[0].link).toBe("https://x.kr/v/1");
+  });
+
+  it("센티넬이 없는 스펙은 직계 텍스트를 읽지 않는다 (기존 소스의 수집 결과가 바뀌지 않음)", () => {
+    // 같은 HTML이라도 센티넬이 없으면 제목 후보가 없는 항목은 건너뛰어진다.
+    expect(applySpec(html, base, pageUrl)).toEqual([]);
+    expect(applySpec(html, { ...base, titleSelector: "span.date" }, pageUrl).map((r) => r.title)).toEqual([
+      "2026-01-05",
+      "2026-01-04",
+      "2026-01-03",
+    ]);
   });
 });

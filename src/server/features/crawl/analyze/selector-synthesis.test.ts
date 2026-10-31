@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { applySpec, type ExtractedRow } from "../extract";
+import { applySpec, SELF_TITLE_SELECTOR, type ExtractedRow } from "../extract";
 import type { PageReadResult } from "./llm-read";
 import { buildPageOutline, type PageOutline } from "./page-outline";
 import { resolveItemRoots, synthesizeSpec } from "./selector-synthesis";
@@ -855,7 +855,7 @@ describe("과포함은 이 단계가 보증하지 않는다 (검증 단계의 �
 });
 
 describe("제목 셀렉터를 만들 수 없을 때", () => {
-  it("제목이 항목 루트의 직계 텍스트여도 null이 아니라 titleSelector 없는 스펙을 만든다", () => {
+  it("제목이 항목 루트의 직계 텍스트면 titleSelector를 센티넬로 두고 applySpec이 제목과 필드를 뽑는다", () => {
     const html = page(`
       <ul class="list">
         <li>2026년 지원사업 공고 <span class="date">2026-01-05</span></li>
@@ -873,14 +873,46 @@ describe("제목 셀렉터를 만들 수 없을 때", () => {
     );
 
     expect(outline.refs.filter((el) => el?.tagName === "LI")).toHaveLength(2);
-    expect(result).not.toBeNull();
     expect(result?.spec.itemSelector).toBe("ul.list > li");
-    expect(result?.spec.titleSelector).toBeUndefined();
+    expect(result?.spec.titleSelector).toBe(SELF_TITLE_SELECTOR);
     expect(result?.spec.fields?.date_text?.selector).toBe("span.date");
-    expect(result?.dropped).toEqual([
-      { key: "title", reason: expect.stringContaining("titleSelector를 생략") },
-      { key: "link", reason: expect.stringContaining("a[href]") },
+    // 앵커가 없어 링크만 못 만든다.
+    expect(result?.dropped).toEqual([{ key: "link", reason: expect.stringContaining("a[href]") }]);
+
+    const rows = applySpec(html, result!.spec, PAGE_URL);
+    expect(rows.map((r) => ({ title: r.title, link: r.link, attrs: r.attrs }))).toEqual([
+      { title: titles[0], link: null, attrs: { date_text: dates[0] } },
+      { title: titles[1], link: null, attrs: { date_text: dates[1] } },
     ]);
+  });
+
+  it("일부 항목만 제목이 항목 루트 자신이면 센티넬을 쓰지 않고 생략한다", () => {
+    const html = page(`
+      <ul class="list">
+        <li>텍스트로만 된 제목입니다 <span class="date">2026-01-05</span></li>
+        <li><a href="/a/2">앵커로 된 제목입니다</a><span class="date">2026-01-04</span></li>
+        <li><a href="/a/3">또 다른 앵커 제목입니다</a><span class="date">2026-01-03</span></li>
+      </ul>`);
+    const { result } = synth(html, (o) => [
+      {
+        titleRef: o.refs.findIndex((el) => el?.tagName === "LI" && fold(el.textContent).startsWith("텍스트로만")),
+        titleText: "텍스트로만 된 제목입니다",
+        fields: [field("date_text", refOf(o, "2026-01-05"), "2026-01-05")],
+      },
+      {
+        titleRef: refOf(o, "앵커로 된 제목입니다"),
+        titleText: "앵커로 된 제목입니다",
+        fields: [field("date_text", refOf(o, "2026-01-04"), "2026-01-04")],
+      },
+      {
+        titleRef: refOf(o, "또 다른 앵커 제목입니다"),
+        titleText: "또 다른 앵커 제목입니다",
+        fields: [field("date_text", refOf(o, "2026-01-03"), "2026-01-03")],
+      },
+    ]);
+
+    expect(result?.spec.titleSelector).toBeUndefined();
+    expect(result?.dropped).toContainEqual({ key: "title", reason: expect.stringContaining("일부 항목만") });
   });
 
   it("제목 상대 셀렉터가 항목마다 달라 일반화되지 않으면 생략하고, 기존 추측이 제목·필드를 뽑는다", () => {
