@@ -125,6 +125,10 @@ function analysis(patch: Partial<ListingAnalysis> = {}): ListingAnalysis {
     staticHtml: "<html></html>",
     finalUrl: SOURCE_URL,
     blocked: null,
+    profile: null,
+    suggested: { displayName: "", categoryPath: [], tagNames: [] },
+    listCandidates: [],
+    pageKind: "list",
     ...patch,
   };
 }

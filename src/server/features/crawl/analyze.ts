@@ -1,23 +1,24 @@
 import type {
   AnalyzeResult,
   AnalyzeStep,
+  PageKind,
   ParentCandidate,
   SourceField,
 } from "@myportal/api-contracts";
 import { getDb } from "../../config/db";
 import { AppError, errorCodes, type ErrorCode } from "../../errors/error-codes";
-import { fetchPage } from "./fetcher";
-import { enrichWithLlm, type EnrichResult } from "./llm/enrich";
+import { hintMatchesOutline } from "./analyze/llm-read";
+import { buildPageOutline } from "./analyze/page-outline";
+import { buildFetchProfile, type FetchProfile } from "./analyze/profile";
+import { runAnalysis, type AnalysisOutcome } from "./analyze/run-analysis";
+import { fetchPage, type FetchResult } from "./fetcher";
 import type { LlmPurpose } from "./llm/usage";
-import { renderPage } from "./render";
+import { renderPage, type RenderTimings } from "./render";
 import { robotsAllowed } from "./robots";
 import {
-  applySpec,
   discoverFeedUrl,
-  generateSpec,
   looksLikeFeed,
   parseFeed,
-  parseJsonLdList,
   type CrawlSpec,
   type ExtractedRow,
 } from "./extract";
@@ -126,126 +127,52 @@ export interface AnalyzeOutcome {
   feedUrl: string | null;
 }
 
-interface Detection {
-  outcome: AnalyzeOutcome | null;
-  // 힌트가 지정됐는데 그 문자열을 포함한 목록을 못 찾은 경우 true —
-  // JS 렌더링 재시도의 트리거로 사용한다.
-  hintMissed: boolean;
-}
+const FEED_STEP = "RSS/Atom 피드 확인";
 
-// 페이지에서 목록 추출 전략을 순서대로 시도한다: (힌트) → RSS → JSON-LD → DOM 휴리스틱.
-async function detectExtraction(
-  html: string,
-  contentType: string,
-  pageUrl: string,
+// 피드는 이미 구조화된 데이터라 렌더링도 LLM도 더할 것이 없다. 그래서 이 분기만은
+// 렌더링 앞에서 끝낸다 (설계서 §3). 피드를 못 찾으면 null — 호출자가 렌더링으로 넘어간다.
+async function detectFeed(
+  page: FetchResult,
   steps: AnalyzeStep[],
-  hint?: string,
-): Promise<Detection> {
-  // 사용자가 목록 항목 텍스트를 직접 지정했으면 그 영역을 우선 시도한다.
-  // 명시된 사용자 의도가 자동 추정보다 우선한다.
-  if (hint) {
-    const hinted = generateSpec(html, pageUrl, hint);
-    if (hinted?.hintMatched) {
-      steps.push(
-        step("힌트 영역 선택", "ok", `${hinted.rows.length}개 항목`),
-      );
-      return {
-        outcome: {
-          spec: hinted.spec,
-          rows: hinted.rows,
-          strategy: "html",
-          feedUrl: null,
-        },
-        hintMissed: false,
-      };
-    }
-    steps.push(
-      step(
-        "힌트 영역 선택",
-        "warn",
-        "힌트 문자열을 포함한 목록을 찾지 못했습니다 — 자동 추정으로 진행",
-      ),
-    );
-  }
-
-  if (looksLikeFeed(contentType, html)) {
-    const rows = parseFeed(html, pageUrl);
+): Promise<AnalyzeOutcome | null> {
+  if (looksLikeFeed(page.contentType, page.body)) {
+    const rows = parseFeed(page.body, page.finalUrl);
     if (rows.length > 0) {
-      steps.push(step("피드 형식 감지", "ok", `${rows.length}개 항목`));
+      steps.push(step(FEED_STEP, "ok", `${rows.length}개 항목`));
       return {
-        outcome: {
-          spec: { strategy: "rss" },
-          rows,
-          strategy: "rss",
-          feedUrl: pageUrl,
-        },
-        hintMissed: Boolean(hint),
+        spec: { strategy: "rss" },
+        rows,
+        strategy: "rss",
+        feedUrl: page.finalUrl,
       };
     }
   }
 
-  const feedUrl = discoverFeedUrl(html, pageUrl);
-  if (feedUrl && feedUrl !== pageUrl) {
-    try {
-      const feed = await fetchPage(feedUrl);
-      if (looksLikeFeed(feed.contentType, feed.body)) {
-        const rows = parseFeed(feed.body, feed.finalUrl);
-        if (rows.length > 0) {
-          steps.push(
-            step("RSS/Atom 피드 발견", "ok", `${rows.length}개 항목`),
-          );
-          return {
-            outcome: {
-              spec: { strategy: "rss", feedUrl: feed.finalUrl },
-              rows,
-              strategy: "rss",
-              feedUrl: feed.finalUrl,
-            },
-            hintMissed: Boolean(hint),
-          };
-        }
-      }
-    } catch {
-      steps.push(step("RSS/Atom 피드 발견", "warn", "피드 조회 실패"));
+  const feedUrl = discoverFeedUrl(page.body, page.finalUrl);
+  if (!feedUrl || feedUrl === page.finalUrl) {
+    steps.push(step(FEED_STEP, "warn", "피드 없음"));
+    return null;
+  }
+  try {
+    const feed = await fetchPage(feedUrl);
+    const rows = looksLikeFeed(feed.contentType, feed.body)
+      ? parseFeed(feed.body, feed.finalUrl)
+      : [];
+    if (rows.length === 0) {
+      steps.push(step(FEED_STEP, "warn", "피드에 항목이 없음"));
+      return null;
     }
-  } else {
-    steps.push(step("RSS/Atom 피드 발견", "warn", "피드 없음"));
-  }
-
-  const jsonLd = parseJsonLdList(html, pageUrl);
-  if (jsonLd && jsonLd.length >= 3) {
-    steps.push(
-      step("구조화 데이터(JSON-LD) 감지", "ok", `${jsonLd.length}개 항목`),
-    );
+    steps.push(step(FEED_STEP, "ok", `${rows.length}개 항목`));
     return {
-      outcome: {
-        spec: { strategy: "structured" },
-        rows: jsonLd,
-        strategy: "structured",
-        feedUrl: null,
-      },
-      hintMissed: Boolean(hint),
+      spec: { strategy: "rss", feedUrl: feed.finalUrl },
+      rows,
+      strategy: "rss",
+      feedUrl: feed.finalUrl,
     };
+  } catch {
+    steps.push(step(FEED_STEP, "warn", "피드 조회 실패"));
+    return null;
   }
-  steps.push(step("구조화 데이터(JSON-LD) 감지", "warn", "목록 없음"));
-
-  const generated = generateSpec(html, pageUrl);
-  if (generated && generated.rows.length >= 3) {
-    steps.push(
-      step("HTML 목록 패턴 추출", "ok", `${generated.rows.length}개 항목`),
-    );
-    return {
-      outcome: {
-        spec: generated.spec,
-        rows: generated.rows,
-        strategy: "html",
-        feedUrl: null,
-      },
-      hintMissed: Boolean(hint),
-    };
-  }
-  steps.push(step("HTML 목록 패턴 추출", "fail", "반복 목록을 찾지 못함"));
-  return { outcome: null, hintMissed: Boolean(hint) };
 }
 
 // 상세 페이지로 판단되면 부모 목록 후보를 제시한다.
@@ -285,18 +212,147 @@ export interface ListingAnalysis {
   finalUrl: string;
   // robots 금지·fetch 실패. 던지지 않고 돌려줘 호출처가 각자의 응답 형태로 조립한다.
   blocked: { code: ErrorCode; detail: string } | null;
+  // 분석이 측정한 수집 프로파일. 목록을 찾지 못했으면 null.
+  profile: FetchProfile | null;
+  suggested: AnalysisOutcome["suggested"];
+  // LLM이 제안하고 페이지의 실제 앵커로 검증된 부모 목록 후보. 폴백 경로에서는 비어 있다.
+  listCandidates: ParentCandidate[];
+  pageKind: PageKind;
 }
 
-// robots → 페이지 가져오기 → 추출 전략 감지 → 렌더링 재시도 → LLM 보강.
+const NO_SUGGESTION: AnalysisOutcome["suggested"] = {
+  displayName: "",
+  categoryPath: [],
+  tagNames: [],
+};
+
+const RENDER_STEP = "브라우저 렌더링";
+const PROFILE_STEP = "수집 프로파일";
+const MS_PER_SECOND = 1000;
+
+const READY_BASIS_LABEL: Record<RenderTimings["readyBy"], string> = {
+  selector: "항목 확인",
+  networkidle: "네트워크 유휴",
+  stabilized: "DOM 안정화",
+  timeout: "시간 초과",
+};
+
+// 렌더링을 못 해 정적 HTML로 계속할 때 프로파일 측정에 넘기는 값.
+// timeout이면 프로파일이 대기 상한을 쓰므로, 측정하지 못한 값을 짧게 믿지 않는다.
+const NOT_RENDERED_TIMINGS: RenderTimings = {
+  readyMs: 0,
+  readyBy: "timeout",
+  grewByScroll: false,
+};
+
+function seconds(ms: number): string {
+  return (ms / MS_PER_SECOND).toFixed(1);
+}
+
+interface RenderStage {
+  html: string;
+  url: string;
+  timings: RenderTimings;
+}
+
+function renderStep(timings: RenderTimings): AnalyzeStep {
+  if (timings.readyBy === "timeout") {
+    return step(
+      RENDER_STEP,
+      "warn",
+      `로딩 완료를 확인하지 못했습니다 (${seconds(timings.readyMs)}초 대기)`,
+    );
+  }
+  return step(
+    RENDER_STEP,
+    "ok",
+    `로딩 완료 ${seconds(timings.readyMs)}초 (${READY_BASIS_LABEL[timings.readyBy]})`,
+  );
+}
+
+// 렌더링이 실패해도 분석을 포기하지 않는다 — 정적 HTML에도 목록이 있는 사이트가 많다.
+// 다만 로딩 완료를 보장하지 못한 사실은 단계로 남긴다.
+async function renderForAnalysis(
+  page: FetchResult,
+  originalUrl: string,
+  steps: AnalyzeStep[],
+): Promise<RenderStage> {
+  try {
+    // page.finalUrl은 fetch 결과(리다이렉트 반영)이지만 hash fragment는
+    // 서버에 전송되지 않아 사라진다. SPA hash 라우팅 사이트(예: sbiz24.kr의
+    // #/combinePbancList)는 hash가 있어야 올바른 페이지가 로드되므로
+    // 원본 URL의 hash를 보존한 채 렌더링한다.
+    const rendered = await renderPage(withHashRoute(page.finalUrl, originalUrl));
+    steps.push(renderStep(rendered.timings));
+    return { html: rendered.html, url: rendered.finalUrl, timings: rendered.timings };
+  } catch (err) {
+    if (!(err instanceof AppError)) console.error("[analyze] 렌더링 실패:", err);
+    const reason = err instanceof AppError ? err.message : "렌더링에 실패했습니다";
+    steps.push(
+      step(
+        RENDER_STEP,
+        "warn",
+        `${reason} — 정적 HTML로 계속합니다 (로딩 완료를 보장하지 못함)`,
+      ),
+    );
+    return { html: page.body, url: page.finalUrl, timings: NOT_RENDERED_TIMINGS };
+  }
+}
+
+function profileStep(profile: FetchProfile): AnalyzeStep {
+  if (profile.mode === "feed") return step(PROFILE_STEP, "ok", "피드 수집");
+  if (profile.mode === "static") {
+    return step(PROFILE_STEP, "ok", "정적 수집으로 충분 (렌더링 불필요)");
+  }
+  const parts = ["렌더링 필요"];
+  if (profile.settleMs !== undefined) parts.push(`대기 ${seconds(profile.settleMs)}초`);
+  if (profile.waitForSelector) parts.push("항목 확인 셀렉터 저장");
+  return step(PROFILE_STEP, "ok", parts.join(", "));
+}
+
+// 같은 스펙을 정적 HTML과 렌더 DOM에 모두 적용해 비교하므로 던질 수 있는 경로가 있다.
+// 프로파일 계산 실패가 분석 전체를 죽이면 안 되므로 단계로 남기고 null을 돌려준다.
+function measureProfile(
+  steps: AnalyzeStep[],
+  args: Parameters<typeof buildFetchProfile>[0],
+): FetchProfile | null {
+  try {
+    const profile = buildFetchProfile(args);
+    steps.push(profileStep(profile));
+    return profile;
+  } catch (err) {
+    console.error("[analyze] 수집 프로파일 계산 실패:", err);
+    steps.push(step(PROFILE_STEP, "warn", "수집 프로파일을 계산하지 못했습니다 — 기존 방식으로 수집"));
+    return null;
+  }
+}
+
+function feedProfile(): FetchProfile {
+  return { mode: "feed", measuredAt: new Date().toISOString() };
+}
+
+// 렌더링 필요 여부의 단일 출처는 프로파일이지만, 수집기가 프로파일을 읽기 전까지는
+// spec.render를 본다. 이 플래그가 빠지면 렌더링이 필요한 소스가 정적 HTML로 0건을 받아
+// 조용히 죽으므로 프로파일과 같은 값을 함께 남긴다.
+function withRenderFlag(spec: CrawlSpec, profile: FetchProfile | null): CrawlSpec {
+  if (profile?.mode === "rendered" && spec.strategy !== "rss") spec.render = true;
+  return spec;
+}
+
+// robots → 정적 fetch → (피드면 종료) → 렌더링 → 개요 → LLM 해석·합성·검증 → 프로파일.
 // 신규 등록(analyzeUrl)과 재분석이 같은 분석을 쓰도록, 중복 확인 앞뒤를 떼어낸 코어다.
 export async function analyzeListing(args: {
   userId: string;
   url: string; // 정규화된 URL
   hint?: string;
+  // 힌트를 사용자가 입력한 시각. 저장된 힌트를 재사용하는 재분석이 원래 시각을 넘긴다.
+  hintSetAt?: string;
   sourceId: string | null; // llm_calls 기록용
   purpose: LlmPurpose;
+  allowRepair?: boolean;
 }): Promise<ListingAnalysis> {
-  const { userId, url, hint, sourceId, purpose } = args;
+  const { userId, url, hint, hintSetAt, sourceId, purpose, allowRepair } = args;
+  const startedAt = Date.now();
   const steps: AnalyzeStep[] = [];
   const blockedResult = (code: ErrorCode, detail: string): ListingAnalysis => ({
     steps,
@@ -307,6 +363,10 @@ export async function analyzeListing(args: {
     staticHtml: "",
     finalUrl: url,
     blocked: { code, detail },
+    profile: null,
+    suggested: NO_SUGGESTION,
+    listCandidates: [],
+    pageKind: "unknown",
   });
 
   // 3. robots.txt
@@ -318,7 +378,7 @@ export async function analyzeListing(args: {
   steps.push(step("robots.txt 확인", "ok"));
 
   // 4. 페이지 가져오기
-  let page;
+  let page: FetchResult;
   try {
     page = await fetchPage(url);
     steps.push(step("페이지 접근", "ok", `HTTP ${page.status}`));
@@ -330,112 +390,106 @@ export async function analyzeListing(args: {
     throw err;
   }
 
-  const pageTitle = extractTitle(page.body) ?? new URL(page.finalUrl).hostname;
+  const hostname = new URL(page.finalUrl).hostname;
 
-  // 5. 추출 전략 감지
-  // lastHtml은 마지막으로 분석을 시도한 DOM — 힌트 미스 시 사용자가
-  // 직접 힌트를 찾도록 페이지 텍스트로 응답에 포함한다.
-  let lastHtml = page.body;
-  // outcome이 어떤 DOM에서 나왔는지 — LLM 보강은 이 DOM으로 셀렉터를 검증해야 하고,
-  // 렌더링 DOM이었다면 스펙에 render를 남겨야 이후 수집이 같은 DOM을 본다.
-  let analyzed = { html: page.body, url: page.finalUrl, rendered: false };
-  const detection = await detectExtraction(
-    page.body,
-    page.contentType,
-    page.finalUrl,
-    steps,
+  // 5. 피드 조기 종료
+  const feed = await detectFeed(page, steps);
+  if (feed) {
+    const profile = feedProfile();
+    steps.push(profileStep(profile));
+    return {
+      steps,
+      pageTitle: extractTitle(page.body) ?? hostname,
+      outcome: feed,
+      fieldSource: "heuristic",
+      pageText: null,
+      staticHtml: page.body,
+      finalUrl: page.finalUrl,
+      blocked: null,
+      profile,
+      suggested: NO_SUGGESTION,
+      listCandidates: [],
+      pageKind: "list",
+    };
+  }
+
+  // 6. 렌더링 → 개요 → 해석
+  const rendered = await renderForAnalysis(page, url, steps);
+  const outline = buildPageOutline(rendered.html);
+  const analysis = await runAnalysis({
+    html: rendered.html,
+    pageUrl: rendered.url,
+    outline,
     hint,
-  );
-  let outcome = detection.outcome;
-  let hintMissed = detection.hintMissed;
+    hintSetAt,
+    userId,
+    sourceId,
+    purpose,
+    allowRepair,
+    startedAt,
+  });
+  steps.push(...analysis.steps);
 
-  // 6. JS로 목록을 채우는 사이트: 일반 HTML에서 목록을 못 찾았거나
-  // 힌트 문자열이 없으면 헤드리스 브라우저로 렌더링해 한 번 더 시도한다.
-  if (!outcome || detection.hintMissed) {
-    try {
-      // page.finalUrl은 fetch 결과(리다이렉트 반영)이지만 hash fragment는
-      // 서버에 전송되지 않아 사라진다. SPA hash 라우팅 사이트(예: sbiz24.kr의
-      // #/combinePbancList)는 hash가 있어야 올바른 페이지가 로드되므로
-      // 원본 URL의 hash를 보존한 채 렌더링한다.
-      const renderUrl = withHashRoute(page.finalUrl, url);
-      const rendered = await renderPage(renderUrl);
-      lastHtml = rendered.html;
-      steps.push(
-        step("브라우저 렌더링", "ok", "렌더링된 DOM으로 다시 분석"),
-      );
-      const retried = await detectExtraction(
-        rendered.html,
-        "text/html",
-        rendered.finalUrl,
-        steps,
-        hint,
-      );
-      hintMissed = retried.hintMissed;
-      // outcome이 없으면 LLM 구제가 이 렌더링 DOM을 쓴다. 정적 outcome이 이미
-      // 있으면(힌트 미스) 그 outcome의 DOM을 유지한다.
-      if (retried.outcome || !outcome) {
-        analyzed = {
-          html: rendered.html,
-          url: rendered.finalUrl,
-          rendered: true,
-        };
+  // 7. 프로파일
+  const { spec } = analysis;
+  const profile = spec
+    ? measureProfile(steps, {
+        staticHtml: page.body,
+        renderedHtml: rendered.html,
+        spec,
+        timings: rendered.timings,
+        strategy: analysis.strategy,
+        pageUrl: rendered.url,
+      })
+    : null;
+  const outcome: AnalyzeOutcome | null = spec
+    ? {
+        spec: withRenderFlag(spec, profile),
+        rows: analysis.rows,
+        strategy: analysis.strategy,
+        feedUrl: analysis.feedUrl,
       }
-      if (retried.outcome) {
-        // 렌더링이 필요했음을 스펙에 기록해 이후 수집도 브라우저로 한다.
-        // rss 전략은 피드 자체를 fetch하므로 렌더링 표시가 불필요하다.
-        if (retried.outcome.spec && retried.outcome.spec.strategy !== "rss") {
-          retried.outcome.spec.render = true;
-        }
-        outcome = retried.outcome;
-      }
-    } catch (err) {
-      steps.push(
-        step(
-          "브라우저 렌더링",
-          "warn",
-          err instanceof AppError ? err.message : "렌더링에 실패했습니다",
-        ),
-      );
-    }
-  }
+    : null;
 
-  // 7. LLM 필드 보강(목록 있음) 또는 구제(목록 없음). 실패해도 예외 없이
-  // 휴리스틱 결과가 유지되고, 구제 실패는 null로 돌아와 호출처가 detail 경로를 탄다.
-  let fieldSource: AnalyzeResult["fieldSource"] = null;
-  const base = outcome?.spec ? { spec: outcome.spec, rows: outcome.rows } : null;
-  if (!outcome || base) {
-    const enriched = await enrichWithLlm({
-      html: analyzed.html,
-      pageUrl: analyzed.url,
-      base,
-      userId,
-      sourceId,
-      // 보강/구제 구분은 목록을 찾았는지에 달려 있어 호출 전에는 알 수 없다.
-      // 호출처는 analyze-fields만 넘기고, 목록이 없으면 여기서 구제로 바꾼다.
-      purpose: !base && purpose === "analyze-fields" ? "analyze-rescue" : purpose,
-    });
-    if (enriched) {
-      steps.push(enriched.step);
-      fieldSource = enriched.fieldSource;
-      // 보강 모드의 rss/structured는 enrich가 건너뛰고 base를 그대로 돌려준다.
-      outcome = {
-        strategy: outcome?.strategy ?? "html",
-        feedUrl: outcome?.feedUrl ?? null,
-        spec: carryOverSpecFlags(enriched, analyzed.rendered, hint),
-        rows: enriched.rows,
-      };
-    }
-  }
+  // 힌트가 있는데 현재 페이지에서 매칭되지 않거나 목록을 못 찾았으면, 사용자가 새 힌트를
+  // 직접 고를 수 있도록 렌더된 페이지의 텍스트를 함께 준다.
+  const hintMissed = Boolean(hint) && (!outcome || !hintMatchesOutline(outline.text, hint ?? ""));
 
   return {
     steps,
-    pageTitle,
+    pageTitle: extractTitle(page.body) ?? extractTitle(rendered.html) ?? analysis.pageTitle ?? hostname,
     outcome,
-    fieldSource,
-    pageText: hintMissed ? toPageText(lastHtml) : null,
+    fieldSource: analysis.fieldSource,
+    pageText: hintMissed ? toPageText(rendered.html) : null,
     staticHtml: page.body,
     finalUrl: page.finalUrl,
     blocked: null,
+    profile,
+    suggested: analysis.suggested,
+    listCandidates: analysis.listCandidates,
+    pageKind: analysis.pageKind,
+  };
+}
+
+const MAX_PARENT_CANDIDATES = 5;
+
+// LLM이 고른 후보를 앞에 두고, URL 경로 자르기 후보로 채운다. LLM 후보는 페이지의
+// 실제 앵커로 검증된 것이라 신뢰할 수 있고, 경로 후보는 LLM이 아무것도 못 골랐을 때의 안전망이다.
+function mergeCandidates(
+  preferred: ParentCandidate[],
+  fallback: ParentCandidate[],
+): ParentCandidate[] {
+  const merged = new Map<string, ParentCandidate>();
+  for (const c of [...preferred, ...fallback]) {
+    if (!merged.has(c.url)) merged.set(c.url, c);
+  }
+  return [...merged.values()].slice(0, MAX_PARENT_CANDIDATES);
+}
+
+function suggestedOf(listing: ListingAnalysis): AnalyzeResult["suggested"] {
+  return {
+    ...listing.suggested,
+    displayName: listing.suggested.displayName || (listing.pageTitle ?? ""),
   };
 }
 
@@ -496,7 +550,7 @@ export async function analyzeUrl(
   }
   steps.push(step("기존 소스 확인", "ok", "신규 소스"));
 
-  // 3~7. robots → 가져오기 → 추출 → 렌더링 재시도 → LLM 보강
+  // 3~7. robots → 가져오기 → (피드 종료) → 렌더링 → LLM 해석·합성·검증 → 프로파일
   const listing = await analyzeListing({
     userId,
     url: normalized,
@@ -528,7 +582,10 @@ export async function analyzeUrl(
   const { outcome, pageTitle } = listing;
   if (!outcome) {
     // 목록을 못 찾으면 상세 페이지로 보고 부모 후보 제시
-    const candidates = parentCandidates(listing.staticHtml, listing.finalUrl);
+    const candidates = mergeCandidates(
+      listing.listCandidates,
+      parentCandidates(listing.staticHtml, listing.finalUrl),
+    );
     steps.push(
       step("페이지 유형 판정", "warn", "목록 패턴 없음 — 상세 페이지로 추정"),
     );
@@ -540,7 +597,7 @@ export async function analyzeUrl(
       candidates,
       existingSourceId: null,
       preview: null,
-      suggested: { displayName: pageTitle ?? "", categoryPath: [], tagNames: [] },
+      suggested: suggestedOf(listing),
       pageText: listing.pageText,
       errorCode: errorCodes.PAGE_TYPE_UNKNOWN,
       fieldSource: null,
@@ -567,30 +624,13 @@ export async function analyzeUrl(
       })),
       fetchStrategy: outcome.strategy,
       spec: outcome.spec,
+      profile: listing.profile,
     },
-    suggested: { displayName: pageTitle ?? "", categoryPath: [], tagNames: [] },
+    suggested: suggestedOf(listing),
     pageText: listing.pageText,
     errorCode: null,
     fieldSource: listing.fieldSource,
   };
-}
-
-// enrichWithLlm이 돌려주는 스펙은 구제 모드에서 { strategy, itemSelector, fields }뿐이라
-// render·hint가 없다. render가 빠지면 이후 정기 수집이 정적 HTML로 0건을 받아
-// 소스가 조용히 죽으므로, 분석 DOM이 렌더링 결과였다면 반드시 되살린다.
-function carryOverSpecFlags(
-  enriched: EnrichResult,
-  rendered: boolean,
-  hint: string | undefined,
-): CrawlSpec {
-  const spec = enriched.spec;
-  if (spec.strategy === "rss") return spec;
-  if (rendered) spec.render = true;
-  // generateSpec과 같은 규칙: 힌트가 있으면 rebuild·self-repair가 재사용하도록 남긴다.
-  if (hint && spec.strategy === "html" && spec.hint === undefined) {
-    spec.hint = hint;
-  }
-  return spec;
 }
 
 function extractTitle(html: string): string | null {
