@@ -10,6 +10,25 @@
 
 **Spec:** [docs/superpowers/specs/2026-10-31-llm-first-source-analysis-design.md](../specs/2026-10-31-llm-first-source-analysis-design.md)
 
+## 실행 순서
+
+태스크 번호는 설계서의 서술 순서를 따르지만, 실행 순서는 다음과 같다. 두 곳에서 타입 의존이 번호 순서와 어긋난다.
+
+```text
+Wave A: Task 1 (dom-selector) ∥ Task 3 (llm-read) ∥ Task 6 (render + profile)
+Wave B: Task 7 (extract: CrawlSpec 필드) ∥ Task 8 (프로파일 영속화)
+Wave C: Task 2 (page-outline)          ∥ Task 10 (계약 + 등록 경로)
+Wave D: Task 4 (selector-synthesis)    ∥ Task 12 (수집 경로)
+Wave E: Task 5 (verify)                ∥ Task 13 (프론트엔드)
+Wave F: Task 9 (분석 오케스트레이터) — 단독
+Wave G: Task 11 (재분석 + 자가복구)
+Wave H: Task 14 (레거시 제거 + 문서)
+```
+
+- **Task 7은 Task 4보다 먼저다.** Task 4가 기록하는 `titleSelector`/`linkSelector`/`publishedSelector`를 Task 7이 `CrawlSpec`에 추가한다. 순서가 뒤바뀌면 typecheck가 깨진다.
+- **Task 10은 Task 9보다 먼저다.** Task 9가 반환하는 `preview.profile`을 Task 10이 계약에 추가한다. 순서가 뒤바뀌면 zod 검증이 그 키를 모른다.
+- 같은 파일을 건드리는 태스크는 같은 웨이브에 넣지 않는다. `extract.ts`는 Task 1·2·7이, `collector.ts`는 Task 6·10·11·12가 공유한다.
+
 ## Global Constraints
 
 - 신규 npm 의존성을 추가하지 않는다 (CLAUDE.md §22).
@@ -173,13 +192,15 @@ git commit -m "LLM이 번호로 노드를 가리킬 수 있도록 페이지 개�
 - Create: `src/server/features/crawl/analyze/llm-read.test.ts`
 
 **Interfaces:**
-- Consumes: `chatJson`, `LlmError` (`../llm/llm-client`), `PageOutline` (Task 2), `fieldTypeSchema`/`fieldRoleSchema` (`@myportal/api-contracts`)
+- Consumes: `chatJson`, `LlmError` (`../llm/llm-client`), `fieldTypeSchema`/`fieldRoleSchema` (`@myportal/api-contracts`)
 - Produces:
   - `type PageReadResult = z.infer<typeof pageReadResponseSchema>` — 설계서 §5-3의 스키마 그대로
-  - `readPage(args: { outline: PageOutline; pageUrl: string; hint?: string; model: LlmModelConfig }): Promise<ChatJsonResult<PageReadResult>>`
-  - `readPageRepair(args: { outline: PageOutline; pageUrl: string; hint?: string; model: LlmModelConfig; attempted: { itemSelector: string; extractedTitles: string[] } }): Promise<ChatJsonResult<PageReadResult>>`
-  - `interface LlmModelConfig { baseUrl: string; apiKey: string; model: string }` — `field-inference.ts`에서 옮겨온다
-  - `hintMatchesOutline(outline: PageOutline, hint: string): boolean`
+  - `readPage(args: { outlineText: string; pageUrl: string; hint?: string; model: LlmModelConfig }): Promise<ChatJsonResult<PageReadResult>>`
+  - `readPageRepair(args: { outlineText: string; pageUrl: string; hint?: string; model: LlmModelConfig; attempted: { itemSelector: string; extractedTitles: string[] } }): Promise<ChatJsonResult<PageReadResult>>`
+  - `interface LlmModelConfig { baseUrl: string; apiKey: string; model: string }` — `field-inference.ts`의 같은 타입을 여기에 새로 정의한다(원본은 Task 14에서 삭제)
+  - `hintMatchesOutline(outlineText: string, hint: string): boolean`
+
+`PageOutline`을 받지 않고 개요 **텍스트**만 받는다. 이 모듈은 DOM이 필요 없고, 의존을 끊으면 Task 2와 병렬로 만들 수 있다. 호출자(Task 9)가 `outline.text`를 넘긴다.
 
 - [ ] **Step 1: 실패하는 테스트 작성** — `chatJson`을 `vi.mock`으로 대체
 
