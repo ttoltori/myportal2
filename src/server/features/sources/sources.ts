@@ -194,22 +194,48 @@ export async function saveFetchProfile(
   await db.query(sourcesSql.updateFetchProfile, [sourceId, JSON.stringify(profile)]);
 }
 
+// 폴백이 쓰였는지와 그 이유. 호출자가 "조용히 폴백"과 "알려야 하는 폴백"을 구분하게 한다.
+//  - none: 저장된 프로파일이 스키마를 통과했다.
+//  - empty: 저장된 값이 비었다(null/undefined/키 없는 객체). 마이그레이션 직후의 정상 상태.
+//  - corrupt: 값이 있는데 파싱이나 스키마 검증에 실패했다. 운영자가 알아야 한다.
+export type FetchProfileFallback = "none" | "empty" | "corrupt";
+
+export interface LoadedFetchProfile {
+  profile: FetchProfile;
+  fallback: FetchProfileFallback;
+}
+
+function isEmptyStoredValue(raw: unknown): boolean {
+  if (raw == null) return true;
+  // 배열은 typeof가 object라도 빈 프로파일이 아니라 형태가 틀린 값이다.
+  return (
+    typeof raw === "object" && !Array.isArray(raw) && Object.keys(raw).length === 0
+  );
+}
+
 // 저장된 값이 비었거나(마이그레이션 직후 '{}') 스키마에 맞지 않으면 예외 대신
 // 레거시 폴백을 쓴다. 손으로 넣은 값이나 구버전 형태가 수집 전체를 깨뜨리면 안 되고,
 // 폴백은 spec.render를 따르므로 기존 동작이 유지된다.
+// 폴백 여부 판정을 여기서 함께 하는 이유: 호출자가 따로 재판정하면 폴백이 쓰이는 조건과
+// 로그를 남기는 조건이 어긋날 수 있다.
 export function loadFetchProfile(
   row: { fetch_profile: unknown },
   spec: CrawlSpec | null,
-): FetchProfile {
+): LoadedFetchProfile {
   // pg는 jsonb를 이미 파싱된 객체로 반환하므로 문자열일 때만 JSON.parse한다.
   let raw = row.fetch_profile;
   if (typeof raw === "string") {
     try {
       raw = JSON.parse(raw);
     } catch {
-      return profileFromLegacySpec(spec);
+      return { profile: profileFromLegacySpec(spec), fallback: "corrupt" };
     }
   }
+  if (isEmptyStoredValue(raw)) {
+    return { profile: profileFromLegacySpec(spec), fallback: "empty" };
+  }
   const parsed = fetchProfileSchema.safeParse(raw);
-  return parsed.success ? parsed.data : profileFromLegacySpec(spec);
+  return parsed.success
+    ? { profile: parsed.data, fallback: "none" }
+    : { profile: profileFromLegacySpec(spec), fallback: "corrupt" };
 }

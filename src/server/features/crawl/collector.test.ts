@@ -215,22 +215,34 @@ const VALID_PROFILE = {
   measuredAt: "2026-10-31T00:00:00.000Z",
 };
 
+// getDb()가 돌려주는 db와 트랜잭션의 tx를 별도 객체로 둔다. 같은 객체면 구현이 tx를
+// 빼먹고 getDb()로 떨어져도 테스트가 통과해, 부분 실패를 남기는 회귀를 못 잡는다.
 function fakeCreateDb(existingSourceId: string | null) {
   const profileWrites: unknown[][] = [];
-  const query = vi.fn(async (sql: string, params?: unknown[]) => {
-    if (sql === sourcesSql.findByNormalizedUrl) {
-      return { rows: existingSourceId ? [{ id: existingSourceId }] : [] };
-    }
-    if (sql === sourcesSql.insertSource) return { rows: [{ id: "src-new" }] };
-    if (sql === sourcesSql.insertSubscription) return { rows: [{ id: "sub-new" }] };
-    if (sql === sourcesSql.updateFetchProfile) {
-      profileWrites.push(params ?? []);
+  const txProfileWrites: unknown[][] = [];
+  const dbProfileWrites: unknown[][] = [];
+  const handler = (writes: unknown[][]) =>
+    vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql === sourcesSql.findByNormalizedUrl) {
+        return { rows: existingSourceId ? [{ id: existingSourceId }] : [] };
+      }
+      if (sql === sourcesSql.insertSource) return { rows: [{ id: "src-new" }] };
+      if (sql === sourcesSql.insertSubscription) return { rows: [{ id: "sub-new" }] };
+      if (sql === sourcesSql.updateFetchProfile) {
+        profileWrites.push(params ?? []);
+        writes.push(params ?? []);
+        return { rows: [] };
+      }
       return { rows: [] };
-    }
-    return { rows: [] };
-  });
-  const db = { query, transaction: vi.fn(), profileWrites };
-  db.transaction.mockImplementation(async (cb: (tx: unknown) => unknown) => cb(db));
+    });
+  const tx = { query: handler(txProfileWrites) };
+  const db = {
+    query: handler(dbProfileWrites),
+    transaction: vi.fn(async (cb: (t: unknown) => unknown) => cb(tx)),
+    profileWrites,
+    txProfileWrites,
+    dbProfileWrites,
+  };
   vi.mocked(getDb).mockReturnValue(db as never);
   return db;
 }
@@ -259,6 +271,9 @@ describe("createSourceWithBaseline - 수집 프로파일", () => {
     expect(db.profileWrites).toHaveLength(1);
     expect(db.profileWrites[0][0]).toBe("src-new");
     expect(JSON.parse(String(db.profileWrites[0][1]))).toEqual(VALID_PROFILE);
+    // 트랜잭션의 tx로 저장해야 이후 단계가 실패했을 때 함께 롤백된다.
+    expect(db.txProfileWrites).toHaveLength(1);
+    expect(db.dbProfileWrites).toHaveLength(0);
   });
 
   it("프로파일이 스키마에 맞지 않으면 무시하고 프로파일 없이 등록한다", async () => {
@@ -280,6 +295,48 @@ describe("createSourceWithBaseline - 수집 프로파일", () => {
     expect(logged).toContain("[source-create]");
     expect(logged).toContain(PAGE_URL);
     expect(logged).not.toContain("teleport");
+    errSpy.mockRestore();
+  });
+
+  it("로그의 url은 JSON 문자열로 감싸 개행으로 로그를 위조하지 못하게 한다", async () => {
+    fakeCreateDb(null);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await createSourceWithBaseline("user-1", {
+      ...createInput({ mode: "teleport" }),
+      url: "https://x.kr/list\n[collect] 위조된 줄",
+    });
+
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    const logged = String(errSpy.mock.calls[0][0]);
+    expect(logged.includes(String.fromCharCode(10))).toBe(false);
+    expect(logged).toContain(JSON.stringify("\n[collect]").slice(1, -1));
+    errSpy.mockRestore();
+  });
+
+  it("기존 소스를 재사용하는 등록은 잘못된 프로파일이어도 로그를 남기지 않는다", async () => {
+    // 재사용 등록은 프로파일을 쓰지 않으므로 검증 실패 로그는 소음이다.
+    fakeCreateDb("src-existing");
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await createSourceWithBaseline("user-1", createInput({ mode: "teleport" }));
+
+    expect(errSpy).not.toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it("카테고리가 없어 404로 끝나는 요청은 프로파일 검증 로그를 남기지 않는다", async () => {
+    fakeCreateDb(null);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      createSourceWithBaseline("user-1", {
+        ...createInput({ mode: "teleport" }),
+        categoryId: "missing-cat",
+      }),
+    ).rejects.toMatchObject({ code: errorCodes.CATEGORY_NOT_FOUND });
+
+    expect(errSpy).not.toHaveBeenCalled();
     errSpy.mockRestore();
   });
 
@@ -468,6 +525,16 @@ describe("collectSource - 수집 프로파일", () => {
     errSpy.mockRestore();
   });
 
+  it("빈 배열 프로파일은 빈 값이 아니라 손상으로 보고 로그를 남긴다", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    fakeCollectDb({ fetch_profile: [] });
+
+    await collectSource("src-1");
+
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    errSpy.mockRestore();
+  });
+
   it("프로파일이 손상되고 spec.render도 없으면 정적 폴백을 로그로 드러낸다", async () => {
     // 렌더링이 필요한 소스가 흔적 없이 정적 수집으로 내려가는 바로 그 사고.
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -543,8 +610,12 @@ describe("collectSource - 수집 프로파일", () => {
       fetch_profile: { mode: "rendered", settleMs: 2000, measuredAt: MEASURED_AT },
     });
 
-    await collectSource("src-1");
+    const out = await collectSource("src-1");
 
+    // 추출이 실제로 성공했어야 한다. 앞 단계에서 예외로 끊긴 경로에서도
+    // "LLM 미호출"은 참이므로, 정상 수집이 끝까지 갔다는 단언이 함께 있어야 의미가 있다.
+    expect(out.result).toBe("ok");
+    expect(out.newCount).toBe(5);
     expect(readPage).not.toHaveBeenCalled();
     expect(chatJson).not.toHaveBeenCalled();
     expect(enrichWithLlm).not.toHaveBeenCalled();

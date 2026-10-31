@@ -33,14 +33,14 @@ beforeEach(() => {
 
 describe("loadFetchProfile", () => {
   it("빈 jsonb면 spec.render로 mode를 유도한다", () => {
-    expect(loadFetchProfile({ fetch_profile: {} }, renderSpec).mode).toBe("rendered");
-    expect(loadFetchProfile({ fetch_profile: {} }, staticSpec).mode).toBe("static");
-    expect(loadFetchProfile({ fetch_profile: null }, null).mode).toBe("static");
+    expect(loadFetchProfile({ fetch_profile: {} }, renderSpec).profile.mode).toBe("rendered");
+    expect(loadFetchProfile({ fetch_profile: {} }, staticSpec).profile.mode).toBe("static");
+    expect(loadFetchProfile({ fetch_profile: null }, null).profile.mode).toBe("static");
   });
 
   it("저장된 프로파일이 스키마에 맞으면 그대로 쓴다", () => {
     // spec.render와 달라도 저장된 값이 우선이어야 스펙 교체에 영향받지 않는다.
-    expect(loadFetchProfile({ fetch_profile: stored }, staticSpec)).toEqual(stored);
+    expect(loadFetchProfile({ fetch_profile: stored }, staticSpec).profile).toEqual(stored);
   });
 
   it("저장된 프로파일이 스키마에 맞지 않으면 레거시 폴백으로 되돌린다", () => {
@@ -53,7 +53,7 @@ describe("loadFetchProfile", () => {
       42,
       "not json {",
     ]) {
-      const profile = loadFetchProfile({ fetch_profile: bad }, renderSpec);
+      const { profile } = loadFetchProfile({ fetch_profile: bad }, renderSpec);
       expect(profile.mode).toBe("rendered");
       expect(profile.settleMs).toBeUndefined();
     }
@@ -61,8 +61,37 @@ describe("loadFetchProfile", () => {
 
   it("pg가 문자열로 돌려준 jsonb도 파싱한다", () => {
     expect(
-      loadFetchProfile({ fetch_profile: JSON.stringify(stored) }, staticSpec),
+      loadFetchProfile({ fetch_profile: JSON.stringify(stored) }, staticSpec).profile,
     ).toEqual(stored);
+  });
+});
+
+describe("loadFetchProfile - fallback 판정", () => {
+  // 로그를 남길지(corrupt)와 폴백이 쓰였는지가 한 곳에서 정해져야 어긋나지 않는다.
+  const cases: [string, unknown, "none" | "empty" | "corrupt"][] = [
+    ["정상 프로파일", stored, "none"],
+    ["문자열로 온 정상 프로파일", JSON.stringify(stored), "none"],
+    ["null", null, "empty"],
+    ["undefined", undefined, "empty"],
+    ["빈 객체", {}, "empty"],
+    ["문자열 '{}'", "{}", "empty"],
+    // 문자열 "null"은 파싱하면 실제 null과 같으므로 같은 분류여야 한다.
+    ["문자열 'null'", "null", "empty"],
+    // 빈 배열은 빈 프로파일이 아니라 형태가 틀린 값이다.
+    ["빈 배열", [], "corrupt"],
+    ["파싱 불가 문자열", "not json {", "corrupt"],
+    ["잘못된 mode", { mode: "browser", measuredAt: "2026-10-31T00:00:00.000Z" }, "corrupt"],
+    ["settleMs 0", { mode: "rendered", settleMs: 0, measuredAt: "2026-10-31T00:00:00.000Z" }, "corrupt"],
+    ["숫자", 42, "corrupt"],
+  ];
+
+  it.each(cases)("%s -> %s 판정", (_name, value, expected) => {
+    expect(loadFetchProfile({ fetch_profile: value }, renderSpec).fallback).toBe(expected);
+  });
+
+  it("폴백이어도 profile은 spec.render로 유도한 레거시 값이다", () => {
+    expect(loadFetchProfile({ fetch_profile: [] }, renderSpec).profile.mode).toBe("rendered");
+    expect(loadFetchProfile({ fetch_profile: [] }, staticSpec).profile.mode).toBe("static");
   });
 });
 

@@ -180,33 +180,6 @@ function renderOptionsFrom(profile: FetchProfile): RenderOptions {
   return opts;
 }
 
-// loadFetchProfile은 손상된 값을 조용히 레거시 폴백으로 바꾼다. 그런데 spec.render가
-// 없는 소스는 폴백이 정적 수집이라, 렌더링이 필요한 소스가 아무 흔적 없이 0건이 된다.
-// 그래서 폴백이 쓰였음을 로그로 남긴다. 마이그레이션 직후의 빈 값('{}')은 정상적인
-// 레거시 상태라 매 수집마다 로그를 채우지 않도록 제외한다.
-// 원본 값은 싣지 않고 소스 id와 실제 적용된 모드만 남긴다.
-function warnIfProfileCorrupted(
-  source: { id: string; fetch_profile: unknown },
-  used: FetchProfile,
-): void {
-  let raw = source.fetch_profile;
-  if (raw == null) return;
-  if (typeof raw === "string") {
-    try {
-      raw = JSON.parse(raw);
-    } catch {
-      raw = undefined;
-    }
-  }
-  const isEmptyObject =
-    typeof raw === "object" && raw !== null && Object.keys(raw).length === 0;
-  if (isEmptyObject) return;
-  if (raw !== undefined && fetchProfileSchema.safeParse(raw).success) return;
-  console.error(
-    `[collect] 저장된 수집 프로파일이 손상되어 레거시 폴백 사용: source=${source.id} mode=${used.mode}`,
-  );
-}
-
 // ── main collect ───────────────────────────────────────
 
 export async function collectSource(
@@ -309,8 +282,15 @@ export async function collectSource(
 
     // 어떻게 가져올지는 스펙이 아니라 수집 프로파일이 정한다. 저장된 값이 비었거나
     // 손상되면 loadFetchProfile이 spec.render로 유도한 레거시 폴백을 돌려준다.
-    const profile = loadFetchProfile(source, spec);
-    warnIfProfileCorrupted(source, profile);
+    const { profile, fallback } = loadFetchProfile(source, spec);
+    // 폴백이 spec.render 없는 소스를 정적 수집으로 내리면 렌더링이 필요한 소스가 흔적 없이
+    // 0건이 된다. 그래서 손상만 알린다. 빈 값('{}')은 마이그레이션 직후 모든 기존 소스의
+    // 정상 상태라 로그를 남기면 정작 봐야 할 손상 로그가 묻힌다. 원본 값은 싣지 않는다.
+    if (fallback === "corrupt") {
+      console.error(
+        `[collect] 저장된 수집 프로파일이 손상되어 레거시 폴백 사용: source=${source.id} mode=${profile.mode}`,
+      );
+    }
 
     let body = "";
     let contentType = "";
@@ -439,7 +419,6 @@ export async function createSourceWithBaseline(
 ): Promise<{ subscriptionId: string; sourceId: string; baselineCount: number; reusedExisting: boolean }> {
   const db = getDb();
   const normalized = normalizeUrl(input.url);
-  const profile = parseClientProfile(input.profile, input.url);
 
   if (input.categoryId) {
     const { rows: cat } = await db.query<{ id: string }>(
@@ -503,6 +482,9 @@ export async function createSourceWithBaseline(
       }
       // 재사용 분기에서는 저장하지 않는다: 다른 사용자가 등록한 공유 소스의 수집 설정을
       // 신규 구독자가 바꿀 수 없다. 트랜잭션 안에서 저장해 부분 실패를 남기지 않는다.
+      // 검증 실패 로그가 신규 소스 등록에서만 남도록 여기서 파싱한다. 재사용 분기나
+      // 카테고리 404로 끝나는 요청에서는 프로파일을 쓰지 않으므로 로그가 소음이 된다.
+      const profile = parseClientProfile(input.profile, input.url);
       if (profile) await saveFetchProfile(sourceId, profile, tx);
     }
 
@@ -563,6 +545,7 @@ export async function createSourceWithBaseline(
 // 형태 불일치로 사용자의 등록이 실패하면 안 된다(프로파일 없이 레거시 폴백으로 수집된다).
 // 다만 렌더링이 필요한 소스가 흔적 없이 정적 수집으로 내려가면 추적할 수 없으므로 로그는 남긴다.
 // 원본 값은 클라이언트가 보낸 임의 데이터라 싣지 않고, 실패 위치(path)와 코드만 요약한다.
+// url도 .url() 검증 없이 문자열로 받으므로 개행으로 로그를 위조하지 못하게 JSON 문자열로 싣는다.
 function parseClientProfile(raw: unknown, url: string): FetchProfile | null {
   if (raw == null) return null;
   const parsed = fetchProfileSchema.safeParse(raw);
@@ -571,7 +554,7 @@ function parseClientProfile(raw: unknown, url: string): FetchProfile | null {
     .slice(0, 5)
     .map((i) => `${i.path.join(".") || "(root)"}:${i.code}`)
     .join(", ");
-  console.error(`[source-create] 수집 프로파일 검증 실패, 프로파일 없이 등록: url=${url} issues=${reasons}`);
+  console.error(`[source-create] 수집 프로파일 검증 실패, 프로파일 없이 등록: url=${JSON.stringify(url)} issues=${reasons}`);
   return null;
 }
 
