@@ -9,3 +9,8 @@ alter table myportal.sources
 
 comment on column myportal.sources.consecutive_empty is
     '연속 빈 추출 횟수 — 추출 행이 0건이면 +1, 1건 이상이면 0. 임계 도달 시 스펙 self-repair 트리거 (접근 실패 횟수는 consecutive_failures)';
+
+-- 002_comments가 consecutive_failures에 붙인 "self-repair 트리거" 코멘트는 이제 사실이 아니다.
+-- 트리거는 consecutive_empty로 옮겨졌다. 002는 적용된 파일이라 수정할 수 없으므로 여기서 갱신한다.
+comment on column myportal.sources.consecutive_failures is
+    '연속 접근 실패 횟수 — 수집이 예외로 끝나면 +1, 예외 없이 끝나면 0. status 판정(warn/fail)에 쓰이며 self-repair 트리거가 아님 (트리거는 consecutive_empty)';
