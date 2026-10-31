@@ -70,15 +70,21 @@ export function relativeSelector(root: Element, el: Element): string | null {
   return root.querySelector(positional) === el ? positional : null;
 }
 
-function matchesAll(els: Element[], selector: string): boolean {
-  const matched = els[0].ownerDocument.querySelectorAll(selector);
-  const set = new Set<Element>(Array.from(matched));
-  return els.every((e) => set.has(e));
+// selector가 els를 모두 포함하면 문서 전체에서의 매칭 개수를, 아니면 null을 돌려준다.
+function matchCountIfCoversAll(els: Element[], selector: string): number | null {
+  const matched = Array.from(els[0].ownerDocument.querySelectorAll(selector));
+  const set = new Set<Element>(matched);
+  return els.every((e) => set.has(e)) ? matched.length : null;
 }
 
 // 여러 요소(예: 목록 항목들)를 모두 포함하는 공통 셀렉터.
 // 공통 클래스가 있으면 그것을, 없으면 같은 부모의 같은 태그 자식이라는 관계를 쓴다.
-// 후보마다 문서에서 실제로 실행해 모든 요소를 포함하는지 확인한다.
+//
+// 보증 범위: "모든 대상을 포함함"만 보증한다. "대상만 매칭됨"은 보증하지 않는다.
+// 클래스는 대상 밖 요소(메뉴, 사이드바 등)에도 붙을 수 있고, 부모 폴백도 식별 가능한
+// 조상이 없으면 `ul > li`처럼 문서 전체를 잡을 수 있기 때문이다. 호출자는 결과를
+// 실제 매칭 개수/추출 수율로 다시 판정해야 하며, 그대로 항목 영역이라고 믿으면 안 된다.
+// 다만 공통 클래스 후보가 여럿이면 매칭 개수가 가장 적은(=과포함이 가장 작은) 것을 고른다.
 export function commonSelector(els: Element[]): string | null {
   if (els.length === 0) return null;
 
@@ -89,15 +95,19 @@ export function commonSelector(els: Element[]): string | null {
   const tags = new Set(els.map((e) => e.tagName.toLowerCase()));
   const tag = tags.size === 1 ? [...tags][0] : "";
 
+  let best: { selector: string; count: number } | null = null;
   for (const cls of commonClasses) {
-    const candidate = `${tag}.${cssEscape(cls)}`;
-    if (matchesAll(els, candidate)) return candidate;
+    const selector = `${tag}.${cssEscape(cls)}`;
+    const count = matchCountIfCoversAll(els, selector);
+    // 동수면 먼저 나온 후보를 유지한다.
+    if (count !== null && (!best || count < best.count)) best = { selector, count };
   }
+  if (best) return best.selector;
 
   const parent = els[0].parentElement;
   if (parent && tag && els.every((e) => e.parentElement === parent)) {
-    const candidate = `${parentSelector(parent)} > ${tag}`;
-    if (matchesAll(els, candidate)) return candidate;
+    const selector = `${parentSelector(parent)} > ${tag}`;
+    if (matchCountIfCoversAll(els, selector) !== null) return selector;
   }
   return null;
 }
