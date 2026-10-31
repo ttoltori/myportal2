@@ -1,5 +1,13 @@
 import { parseHTML } from "linkedom";
-import { applySpec, stripNoise, type CrawlSpec, type ExtractedRow, type FieldSelector } from "../extract";
+import {
+  applySpec,
+  MAX_ITEMS_PER_PAGE,
+  stripNoise,
+  TITLE_MAX_LENGTH,
+  type CrawlSpec,
+  type ExtractedRow,
+  type FieldSelector,
+} from "../extract";
 import type { PageReadResult } from "./llm-read";
 
 // 합성한 스펙이 맞는지 LLM이 보고한 값과 대조한다. 정답지가 그 페이지에서 나오므로
@@ -36,10 +44,6 @@ const MIN_ROW_YIELD = 0.6;
 const MIN_TITLE_MATCH_RATE = 0.8;
 const MIN_FIELD_FILL = 0.3;
 const MIN_FIELD_MATCH = 0.5;
-
-// applyDomSpec이 항목을 자르는 개수. 그쪽 상수가 export되지 않아 값을 맞춰 둔다.
-// 어긋나면 rowYield의 분모가 달라져 판정이 틀린다.
-const MAX_APPLIED_ITEMS = 100;
 
 // 0.6 같은 임계치를 부동소수점 나눗셈 결과와 비교할 때 경계값이 틀어지지 않게 한다.
 const RATE_EPSILON = 1e-9;
@@ -82,7 +86,7 @@ function countMatchedItems(html: string, itemSelector: string): number | null {
   try {
     const { document } = parseHTML(html);
     stripNoise(document);
-    return Math.min(document.querySelectorAll(itemSelector).length, MAX_APPLIED_ITEMS);
+    return Math.min(document.querySelectorAll(itemSelector).length, MAX_ITEMS_PER_PAGE);
   } catch {
     return null;
   }
@@ -122,7 +126,10 @@ interface ItemRowPair {
 function pairItemsWithRows(items: ReadItem[], rows: ExtractedRow[]): ItemRowPair[] {
   const claimed = new Set<ExtractedRow>();
   return items.map((item) => {
-    const hits = rows.filter((row) => containsText(row.title, item.titleText));
+    // 행 제목은 TITLE_MAX_LENGTH로 잘려 있다(스키마상 titleText는 그보다 길 수 있다).
+    // 같은 길이로 자르지 않으면 긴 제목은 같은 제목이어도 반드시 불일치가 되어 멀쩡한 스펙이 폐기된다.
+    const reported = normalize(item.titleText).slice(0, TITLE_MAX_LENGTH);
+    const hits = rows.filter((row) => containsText(row.title, reported));
     const row = hits.find((r) => !claimed.has(r)) ?? hits[0] ?? null;
     if (row) claimed.add(row);
     return { item, row };
@@ -217,6 +224,7 @@ export function verifySpec(
 
 // 임계치 미달 필드를 뺀 새 스펙. 입력 스펙은 건드리지 않는다 — 호출자가 원본을 보존해야 할 수 있다.
 // 점수에 없는 필드는 판단 근거가 없으므로 남긴다.
+// ok=false 점수에는 적용하지 말 것: 그 점수의 fieldRates는 전부 0/0이라 필드가 전부 사라진다.
 export function pruneFailedFields(spec: CrawlSpec, score: VerifyScore): CrawlSpec {
   if (!spec.fields) return { ...spec };
   const kept: Record<string, FieldSelector> = {};

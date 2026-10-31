@@ -47,6 +47,15 @@ export interface CrawlSpec {
   hintSetAt?: string;
 }
 
+// 행 제목의 최대 길이. 역산한 셀렉터가 제목이 아니라 큰 컨테이너를 가리켰을 때
+// 거대한 텍스트가 제목으로 DB에 들어가는 것을 막는다.
+// 제목을 이 값과 비교하는 쪽(analyze/verify.ts)은 같은 길이로 잘라서 맞춰야 한다.
+export const TITLE_MAX_LENGTH = 300;
+
+// 한 페이지에서 행으로 만드는 항목 수의 상한. 검증이 matchedCount의 상한으로 같은 값을 써야
+// 행 수율(itemCount / matchedCount)의 분모가 행을 만든 요소 집합과 어긋나지 않는다.
+export const MAX_ITEMS_PER_PAGE = 100;
+
 export interface ExtractedRow {
   title: string;
   link: string | null;
@@ -264,7 +273,7 @@ function pickTitleText(el: Element): string {
       if (t.length > best.length) best = t;
     }
   }
-  return best.length >= 6 ? best.slice(0, 300) : "";
+  return best.length >= 6 ? best.slice(0, TITLE_MAX_LENGTH) : "";
 }
 
 function buildBuckets(document: Document, anchorless: boolean): Map<string, Bucket> {
@@ -624,13 +633,13 @@ function ownTextTitle(el: Element): string {
   for (const node of el.childNodes) {
     if (node.nodeType === 3) out += node.textContent ?? "";
   }
-  return out.replace(/\s+/g, " ").trim().slice(0, 300);
+  return out.replace(/\s+/g, " ").trim().slice(0, TITLE_MAX_LENGTH);
 }
 
 function explicitTitle(el: Element, selector: string | undefined): string {
   if (selector === SELF_TITLE_SELECTOR) return ownTextTitle(el);
   const target = queryWithin(el, selector);
-  return target ? anchorTitle(target).slice(0, 300) : "";
+  return target ? anchorTitle(target).slice(0, TITLE_MAX_LENGTH) : "";
 }
 
 function explicitLink(
@@ -669,7 +678,7 @@ function applyDomSpec(
     return [];
   }
   const rows: ExtractedRow[] = [];
-  for (const el of items.slice(0, 100)) {
+  for (const el of items.slice(0, MAX_ITEMS_PER_PAGE)) {
     const anchor = pickMainAnchor(el);
     let title = explicitTitle(el, spec.titleSelector);
     let link = explicitLink(el, spec.linkSelector, pageUrl);

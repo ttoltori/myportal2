@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { CrawlSpec } from "../extract";
 import type { PageReadResult } from "./llm-read";
+import { TITLE_MAX_LENGTH, type CrawlSpec } from "../extract";
 import { pruneFailedFields, verifySpec, type VerifyScore } from "./verify";
 
 type ReadItem = PageReadResult["items"][number];
@@ -243,6 +243,20 @@ describe("제목 일치율", () => {
     expect(verify(html, BASE_SPEC, longer).score.titleMatchRate).toBe(0);
   });
 
+  it("행 제목은 TITLE_MAX_LENGTH로 잘리므로 더 긴 보고 제목도 같은 길이로 잘라 비교한다", () => {
+    // 400자 제목: LLM은 400자를 보고하고 추출은 300자만 돌려준다. 자르지 않고 비교하면 항상 불일치다.
+    const longTitle = (n: number): string => `${n}번 ${"긴제목".repeat(133)}`.slice(0, 400);
+    expect(longTitle(1)).toHaveLength(400);
+    const html = page(`<ul>${[1, 2, 3]
+      .map((n) => `<li class="row"><a class="t" href="/p/${n}">${longTitle(n)}</a></li>`)
+      .join("")}</ul>`);
+    const read = readOf([1, 2, 3].map((n) => reportedItem(longTitle(n))));
+    const { rows, score } = verify(html, BASE_SPEC, read);
+    expect(rows[0].title).toHaveLength(TITLE_MAX_LENGTH);
+    expect(score.titleMatchRate).toBe(1);
+    expect(score.ok).toBe(true);
+  });
+
   it("빈 제목은 어떤 행과도 일치하지 않는다", () => {
     const read = readOf([reportedItem(""), reportedItem(titleOf(1)), reportedItem(titleOf(2)), reportedItem(titleOf(3))]);
     const { score } = verify(listPage(3, 0), BASE_SPEC, read);
@@ -440,6 +454,11 @@ describe("깨진 스펙은 예외 없이 ok=false로 환원한다", () => {
       expect(() => verify(html, { ...BASE_SPEC, itemSelector }, read)).not.toThrow();
       expectFailed(verify(html, { ...BASE_SPEC, itemSelector }, read));
     }
+  });
+
+  it("html이 빈 문자열이어도 던지지 않는다", () => {
+    expect(() => verify("", BASE_SPEC, read)).not.toThrow();
+    expectFailed(verify("", BASE_SPEC, read));
   });
 
   it("itemSelector가 없으면", () => {
