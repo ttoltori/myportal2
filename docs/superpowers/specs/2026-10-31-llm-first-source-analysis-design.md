@@ -306,7 +306,9 @@ export function synthesizeSpec(
 
 1. **ref 해소.** 각 `titleRef`/`fields[].ref`를 `outline.refs`에서 요소로 바꾼다. 요소의 텍스트와 LLM이 적은 텍스트가 정규화 후 포함 관계가 아니면, 그 텍스트로 문서 전체를 재탐색해 가장 가까운 요소를 찾는다(`remapped` 증가). 둘 다 실패하면 그 필드를 버린다.
 2. **항목 루트 결정.** 해소된 제목 요소가 2개 이상이어야 한다. 첫 두 제목 요소의 조상 체인을 올라가며 **서로 달라지는 최초의 조상 쌍**을 항목 루트로 잡는다. 제목이 3개 이상이면 셋째로 교차 검증한다.
-3. **itemSelector 생성.** 항목 루트들의 공통 셀렉터를 만든다. 우선순위: ① 공통 class 조합이 있으면 `tag.class1.class2`, ② 없으면 `부모셀렉터 > tag`, ③ 그래도 모호하면 부모 셀렉터를 한 단계 더 올린다. 생성한 셀렉터를 `querySelectorAll`로 실행해 **해소된 모든 항목 루트를 포함하고** 결과 수가 항목 수의 3배를 넘지 않을 때 채택한다.
+3. **itemSelector 생성.** 항목 루트들의 공통 셀렉터를 만든다. 우선순위: ① 공통 class 조합이 있으면 `tag.class1.class2`, ② 없으면 `부모셀렉터 > tag`, ③ 그래도 모호하면 부모 셀렉터를 한 단계 더 올린다. 생성한 셀렉터를 `querySelectorAll`로 실행해 **해소된 모든 항목 루트를 포함할 때** 채택한다.
+
+   결과 수에 상한을 두지 않는다. LLM은 항목을 최대 12건만 보고하지만 실제 목록은 50건일 수 있어, "보고 수의 N배" 같은 상한은 정상 목록을 거부한다. 셀렉터가 메뉴까지 과포함했는지는 수량이 아니라 **수율**로 판정하고, 그 판정은 검증 단계가 맡는다(§5-5).
 4. **필드 셀렉터 생성.** 각 필드 ref 요소에 대해, 소속 항목 루트 기준 상대 셀렉터를 만든다(`dom-selector.ts`의 `relativeSelector(root, el)`). 항목마다 뽑은 상대 셀렉터가 전부 같으면 그대로, 다르면 공통 접미(`.date`, `td:nth-child(4)` 등)로 일반화한다. 일반화도 실패하면 버린다.
 5. **값 추출 방식 결정.** 요소가 앵커이고 필드 `type`이 `url`이면 `attr: "href"`, 이미지면 `attr: "src"`, `<time datetime>`이면 `attr: "datetime"`, 그 외는 텍스트.
 6. **제목·링크·게시일 고정 역할 처리.** `title`/`link`/`published`는 `CrawlSpec.fields`에 넣지 않는다 — `applyDomSpec`이 이미 담당한다. 다만 제목 상대 셀렉터가 `applyDomSpec`의 앵커 추측과 어긋날 수 있으므로, `spec.titleSelector`/`spec.linkSelector`/`spec.publishedSelector`를 **새로 추가**해 명시적으로 지정한다. `applyDomSpec`은 이 값이 있으면 그것을 쓰고, 없으면 기존 추측을 유지한다(기존 소스 호환).
@@ -319,7 +321,11 @@ export function synthesizeSpec(
 ```ts
 export interface VerifyScore {
   itemCount: number;         // applySpec 결과 행 수
+  matchedCount: number;      // itemSelector가 매칭한 요소 수 (상한 100)
   reportedCount: number;     // LLM이 보고한 항목 수
+  // 매칭된 요소 중 실제로 행이 된 비율. applyDomSpec은 제목을 못 찾은 요소를
+  // 건너뛰므로, 셀렉터가 메뉴까지 과포함하면 이 값이 떨어진다.
+  rowYield: number;
   titleMatchRate: number;    // 보고한 제목이 추출 결과에 있는 비율
   fieldRates: Record<string, { fill: number; match: number }>;
   ok: boolean;
@@ -335,7 +341,8 @@ export function verifySpec(
 | 항목 | 기준 | 미달 시 |
 |---|---|---|
 | 추출 행 수 | ≥ 3 | 전체 폐기 |
-| 추출 행 수 | ≥ 보고 항목 수 × 0.7 | 전체 폐기 |
+| 추출 행 수 | ≥ min(보고 항목 수, 10) × 0.7 | 전체 폐기 |
+| 행 수율 `rowYield` | ≥ 0.6 | 전체 폐기 — 셀렉터 과포함 |
 | 제목 일치율 | ≥ 0.8 | 전체 폐기 |
 | 필드 채움률 | ≥ 0.3 | 그 필드만 폐기 |
 | 필드 값 일치율 | ≥ 0.5 | 그 필드만 폐기 |
