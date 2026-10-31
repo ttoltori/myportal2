@@ -85,13 +85,26 @@ const MSG = {
   verificationFailed: `추출 결과가 AI가 읽은 내용과 달랐습니다${FALLBACK_SUFFIX}`,
   retrying: "추출 결과가 AI가 읽은 내용과 달라 한 번 더 읽습니다",
   repairSkippedForTime: `분석 시간이 길어 재해석을 건너뛰었습니다${FALLBACK_SUFFIX}`,
+  emptyPage: `페이지에서 읽을 내용을 찾지 못했습니다${FALLBACK_SUFFIX}`,
   hintMissing: "힌트 문자열이 현재 페이지에 없습니다 — 목록 내용이 바뀐 것 같습니다",
   listNotFound: "반복 목록을 찾지 못함",
 } as const;
 
-// chatJson은 스키마 불일치 시 2회 시도하고 시도당 타임아웃이 40초라 호출 하나가 최대 80초다.
-// 서버리스 실행 한도 안에서 보수 호출까지 끝내려면, 이미 이만큼 지났을 때 보수를 포기한다.
-const REPAIR_DEADLINE_MS = 45_000;
+// 보수 호출을 시작해도 되는 마감(분석 시작 후 경과 ms). 이 값은 라우트의 maxDuration에서 역산한다:
+//   마감 = maxDuration − 보수 호출 최악 소요 − 꼬리 여유
+//        = 120초 − (시도 timeout 40초 × chatJson 최대 시도 2회 = 80초) − 10초 = 30초
+// 마감 직전(30초)에 시작한 보수가 최악(80초)까지 걸려도 110초에 끝나고, 남은 10초가
+// 프로파일 계산과 응답 직렬화를 받친다. 플랫폼이 중간에 끊으면 폴백도 못 타고 응답 자체가
+// 없어 가장 나쁜 실패이므로, 마감 판정은 이 산술을 어기지 않아야 한다.
+// 라우트(src/app/api/[...path]/route.ts)는 어댑터 계층이라 import하지 않고 값을 여기 옮겨
+// 적는다. maxDuration, llm-read.ts의 TIMEOUT_MS, chatJson의 시도 횟수 중 하나를 바꾸면
+// 아래 상수도 같이 바꿔야 한다.
+const PLATFORM_MAX_DURATION_MS = 120_000;
+const LLM_ATTEMPT_TIMEOUT_MS = 40_000;
+const LLM_MAX_ATTEMPTS = 2;
+const TAIL_MARGIN_MS = 10_000;
+const REPAIR_DEADLINE_MS =
+  PLATFORM_MAX_DURATION_MS - LLM_ATTEMPT_TIMEOUT_MS * LLM_MAX_ATTEMPTS - TAIL_MARGIN_MS;
 
 // 보수 호출에 알려 줄 추출 제목 수. llm-read가 앞쪽 3건만 쓰므로 그만큼만 넘긴다.
 const REPAIR_SAMPLE_TITLES = 3;
@@ -106,11 +119,10 @@ const MIN_FALLBACK_ROWS = 3;
 const RATE_PERCENT = 100;
 const YIELD_DIGITS = 2;
 
-const EMPTY_SUGGESTED: AnalysisOutcome["suggested"] = {
-  displayName: "",
-  categoryPath: [],
-  tagNames: [],
-};
+// 모듈 공유 객체를 응답에 실으면 하류에서 배열에 push했을 때 이후 모든 응답이 오염되므로 매번 새로 만든다.
+function emptySuggested(): AnalysisOutcome["suggested"] {
+  return { displayName: "", categoryPath: [], tagNames: [] };
+}
 
 // ── 단계 도우미 ──
 
@@ -300,13 +312,8 @@ async function repairRead(
   args: RunAnalysisArgs,
   ctx: LlmContext,
   steps: AnalyzeStep[],
-  startedAt: number,
   rejected: Extract<Attempt, { status: "rejected" }>,
 ): Promise<PageReadResult | null> {
-  if (Date.now() - startedAt > REPAIR_DEADLINE_MS) {
-    steps.push(step(LABEL.reread, "warn", MSG.repairSkippedForTime));
-    return null;
-  }
   const read = await callLlm(ctx, () =>
     readPageRepair({
       outlineText: outlineTextFor(args.outline),
@@ -344,6 +351,12 @@ async function runLlmPath(
   steps: AnalyzeStep[],
   startedAt: number,
 ): Promise<LlmPathResult> {
+  // 개요가 비면(빈 문서, 차단 페이지) 모델에게 보여 줄 것이 없다. 호출하면 한도만 소비하고,
+  // 모델이 "목록 없음"으로 답해 사용자가 원인을 상세 페이지로 오해하게 된다.
+  if (args.outline.text.trim() === "") {
+    steps.push(step(LABEL.read, "warn", MSG.emptyPage));
+    return NO_LLM_RESULT;
+  }
   const ctx = await prepareLlm(args, steps);
   if (!ctx) return NO_LLM_RESULT;
 
@@ -364,8 +377,13 @@ async function runLlmPath(
 
   const attempt = synthesizeAndVerify(args, first);
   // 합성 자체가 안 된 경우에는 시도한 셀렉터가 없어 보수 호출로 알려 줄 것이 없다.
-  const canRepair = attempt.status === "rejected" && args.allowRepair !== false;
+  const repairWanted = attempt.status === "rejected" && args.allowRepair !== false;
+  const outOfTime = Date.now() - startedAt > REPAIR_DEADLINE_MS;
+  // 시간 판정은 첫 단계 문구를 정하기 전에 끝낸다. 그렇지 않으면 "한 번 더 읽습니다"를 남긴 직후
+  // "건너뛰었습니다"가 이어져 사용자에게 보이는 로그가 모순된다.
+  const canRepair = repairWanted && !outOfTime;
   pushAttemptSteps(steps, attempt, canRepair);
+  if (repairWanted && outOfTime) steps.push(step(LABEL.reread, "warn", MSG.repairSkippedForTime));
   if (attempt.status === "accepted") {
     return { read: first, accepted: { spec: attempt.spec, rows: attempt.rows }, judgedNoList: false };
   }
@@ -373,7 +391,7 @@ async function runLlmPath(
     return { read: first, accepted: null, judgedNoList: false };
   }
 
-  const second = await repairRead(args, ctx, steps, startedAt, attempt);
+  const second = await repairRead(args, ctx, steps, attempt);
   if (!second) return { read: first, accepted: null, judgedNoList: false };
 
   const retry = synthesizeAndVerify(args, second);
@@ -441,7 +459,7 @@ function verifiedListCandidates(
 }
 
 function cleanSuggested(read: PageReadResult | null): AnalysisOutcome["suggested"] {
-  if (!read) return EMPTY_SUGGESTED;
+  if (!read) return emptySuggested();
   const { displayName, categoryPath, tagNames } = read.suggested;
   const clean = (list: string[]) => list.map((s) => s.trim()).filter((s) => s !== "");
   return { displayName: displayName.trim(), categoryPath: clean(categoryPath), tagNames: clean(tagNames) };

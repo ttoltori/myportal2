@@ -215,8 +215,9 @@ describe("runAnalysis — LLM 경로", () => {
     expect(recordLlmCall).toHaveBeenCalledTimes(1);
   });
 
-  it("분석 시작 후 45초가 지났으면 보수 호출을 건너뛰고 그 사실을 단계에 남긴다", async () => {
-    const args = argsFor(TABLE_HTML, { startedAt: Date.now() - 46_000 });
+  // maxDuration(120) − 보수 최악(40×2) − 꼬리 여유(10) = 30초가 마감이다.
+  it("분석 시작 후 30초가 지났으면 보수 호출을 건너뛰고 그 사실을 단계에 남긴다", async () => {
+    const args = argsFor(TABLE_HTML, { startedAt: Date.now() - 31_000 });
     vi.mocked(readPage).mockResolvedValue(llmResult(goodRead(args.outline)));
     rejectNextVerification();
 
@@ -226,6 +227,72 @@ describe("runAnalysis — LLM 경로", () => {
     expect(r.fieldSource).toBe("heuristic");
     expect(stepOf(r.steps, "AI 재해석")).toMatchObject({ status: "warn" });
     expect(stepOf(r.steps, "AI 재해석")?.detail).toContain("시간이 길어");
+  });
+
+  it("시간 초과로 보수를 건너뛸 때 \"한 번 더 읽습니다\"라는 단계를 남기지 않는다", async () => {
+    const args = argsFor(TABLE_HTML, { startedAt: Date.now() - 31_000 });
+    vi.mocked(readPage).mockResolvedValue(llmResult(goodRead(args.outline)));
+    rejectNextVerification();
+
+    const r = await runAnalysis(args);
+
+    const verification = stepOf(r.steps, "셀렉터 합성·검증");
+    expect(verification?.detail).not.toContain("한 번 더 읽습니다");
+    expect(verification?.detail).toContain("패턴 추정으로 진행");
+    expect(r.steps.some((s) => s.detail?.includes("한 번 더 읽습니다"))).toBe(false);
+  });
+
+  it("마감 안(29초 경과)이면 보수 호출을 한다", async () => {
+    const args = argsFor(TABLE_HTML, { startedAt: Date.now() - 29_000 });
+    vi.mocked(readPage).mockResolvedValue(llmResult(goodRead(args.outline)));
+    vi.mocked(readPageRepair).mockResolvedValue(llmResult(goodRead(args.outline)));
+    rejectNextVerification();
+
+    const r = await runAnalysis(args);
+
+    expect(readPageRepair).toHaveBeenCalledTimes(1);
+    expect(r.fieldSource).toBe("llm");
+  });
+
+  it("보수가 가능한 경로의 첫 단계 문구는 \"한 번 더 읽습니다\"다", async () => {
+    const args = argsFor(TABLE_HTML);
+    vi.mocked(readPage).mockResolvedValue(llmResult(goodRead(args.outline)));
+    vi.mocked(readPageRepair).mockResolvedValue(llmResult(goodRead(args.outline)));
+    rejectNextVerification();
+
+    const r = await runAnalysis(args);
+
+    const verification = r.steps.filter((s) => s.label === "셀렉터 합성·검증");
+    expect(verification[0]).toMatchObject({ status: "warn" });
+    expect(verification[0].detail).toContain("한 번 더 읽습니다");
+  });
+
+  it("개요가 비어 있으면 LLM을 호출하지 않고 한도도 확인하지 않으며 상세 판정과 구분되는 단계를 남긴다", async () => {
+    const args = argsFor("<html><body></body></html>");
+    expect(args.outline.text).toBe("");
+
+    const r = await runAnalysis(args);
+
+    expect(readPage).not.toHaveBeenCalled();
+    expect(checkLlmQuota).not.toHaveBeenCalled();
+    expect(recordLlmCall).not.toHaveBeenCalled();
+    expect(stepOf(r.steps, "AI 페이지 해석")).toMatchObject({
+      status: "warn",
+      detail: "페이지에서 읽을 내용을 찾지 못했습니다 — 패턴 추정으로 진행",
+    });
+    expect(r.steps.some((s) => s.detail?.includes("상세 페이지로 판단"))).toBe(false);
+    expect(generateSpec).toHaveBeenCalledTimes(1);
+  });
+
+  it("응답의 suggested 배열은 호출마다 새로 만들어진다", async () => {
+    vi.mocked(hasLlm).mockReturnValue(false);
+    const first = await runAnalysis(argsFor(TABLE_HTML));
+    first.suggested.categoryPath.push("오염");
+    first.suggested.tagNames.push("오염");
+
+    const second = await runAnalysis(argsFor(TABLE_HTML));
+
+    expect(second.suggested).toEqual({ displayName: "", categoryPath: [], tagNames: [] });
   });
 
   it("합성이 null이면 보수 없이 폴백하고 단계에 합성 실패를 적는다", async () => {
