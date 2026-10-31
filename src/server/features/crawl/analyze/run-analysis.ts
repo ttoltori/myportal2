@@ -19,7 +19,7 @@ import {
   type PageReadResult,
 } from "./llm-read";
 import type { PageOutline } from "./page-outline";
-import { synthesizeSpec } from "./selector-synthesis";
+import { synthesizeSpec, type SynthesisResult } from "./selector-synthesis";
 import { pruneFailedFields, verifySpec, type VerifyScore } from "./verify";
 
 // 렌더링된 페이지 하나를 해석해 추출 스펙을 만든다: LLM 해석 → 셀렉터 합성 → 검증 → (보수) → 폴백.
@@ -90,6 +90,7 @@ const MSG = {
   emptyPage: `페이지에서 읽을 내용을 찾지 못했습니다${FALLBACK_SUFFIX}`,
   hintMissing: "힌트 문자열이 현재 페이지에 없습니다 — 목록 내용이 바뀐 것 같습니다",
   listNotFound: "반복 목록을 찾지 못함",
+  fallbackCrashed: "패턴 추정 중 오류가 발생했습니다 — 목록을 찾지 못함",
 } as const;
 
 // ── 시간 예산 ──
@@ -134,6 +135,12 @@ const REPAIR_SAMPLE_TITLES = 3;
 // readPage가 문자열 하나만 받으므로 개요 텍스트 끝에 붙이는 것이 유일한 전달 경로다.
 const TRUNCATED_NOTICE = "※ 페이지가 길어 개요의 뒷부분이 잘렸습니다. 아래에 없는 내용은 판단하지 마십시오.";
 
+// 단계 detail에 싣는 문구. 개요가 잘렸다는 사실은 왜 목록을 일부만 찾았는지(혹은 못 찾았는지) 설명한다.
+const OUTLINE_TRUNCATED_NOTE = "페이지가 길어 개요 일부가 잘림";
+
+// 합성 로그에 싣는 제외 사유의 최대 개수. 항목마다 사유가 반복될 수 있어 로그가 길어지는 것을 막는다.
+const MAX_LOGGED_DROPS = 10;
+
 // 폴백 휴리스틱이 목록으로 인정하는 최소 행 수.
 const MIN_FALLBACK_ROWS = 3;
 
@@ -165,6 +172,11 @@ function countReportedFields(read: PageReadResult): number {
 
 function readDetail(read: PageReadResult): string {
   return `목록 ${read.items.length}건, 필드 ${countReportedFields(read)}개`;
+}
+
+// 개요가 잘렸으면 해석 단계 detail에 그 사실을 덧붙인다.
+function withTruncationNote(detail: string, outline: PageOutline): string {
+  return outline.truncated ? `${detail} (${OUTLINE_TRUNCATED_NOTE})` : detail;
 }
 
 // ── LLM 호출 ──
@@ -251,13 +263,29 @@ function outlineTextFor(outline: PageOutline): string {
 
 // ── 합성·검증 ──
 
+// droppedCount: 합성이 버린 필드·항목 수. 단계 detail에 보여 줄 수치다(설계서 §5-4).
 type Attempt =
   | { status: "unsynthesizable" }
-  | { status: "rejected"; spec: CrawlSpec; rows: ExtractedRow[]; score: VerifyScore }
-  | { status: "accepted"; spec: CrawlSpec; rows: ExtractedRow[]; score: VerifyScore };
+  | { status: "rejected"; spec: CrawlSpec; rows: ExtractedRow[]; score: VerifyScore; droppedCount: number }
+  | { status: "accepted"; spec: CrawlSpec; rows: ExtractedRow[]; score: VerifyScore; droppedCount: number };
 
 function fieldCount(spec: CrawlSpec): number {
   return Object.keys(spec.fields ?? {}).length;
+}
+
+// remapped 비율은 설계서 §12가 모델 분리 여부를 판단하는 근거로 지정한 지표다. 값 매칭 폴백은
+// 조용히 동작하므로 남기지 않으면 관측할 방법이 없다. 사유 문자열은 번호와 고정 문구뿐이지만,
+// 페이지에서 온 값이 섞이지 않도록 key와 사유만 싣는다(값은 싣지 않는다).
+function logSynthesis(synthesis: SynthesisResult): void {
+  const { remapped, dropped } = synthesis;
+  const shown = dropped
+    .slice(0, MAX_LOGGED_DROPS)
+    .map((d) => `${d.key}: ${d.reason}`)
+    .join("; ");
+  const more = dropped.length > MAX_LOGGED_DROPS ? ` 외 ${dropped.length - MAX_LOGGED_DROPS}건` : "";
+  console.log(
+    `[analyze] 셀렉터 합성: remapped=${remapped}, dropped=${dropped.length}${shown ? ` (${shown}${more})` : ""}`,
+  );
 }
 
 function synthesizeAndVerify(args: RunAnalysisArgs, read: PageReadResult): Attempt {
@@ -271,19 +299,25 @@ function synthesizeAndVerify(args: RunAnalysisArgs, read: PageReadResult): Attem
     synthesis = null;
   }
   if (!synthesis) return { status: "unsynthesizable" };
+  logSynthesis(synthesis);
+  const droppedCount = synthesis.dropped.length;
 
   const first = verifySpec(html, pageUrl, synthesis.spec, read);
   if (!first.score.ok) {
-    return { status: "rejected", spec: synthesis.spec, rows: first.rows, score: first.score };
+    return { status: "rejected", spec: synthesis.spec, rows: first.rows, score: first.score, droppedCount };
   }
 
   const pruned = pruneFailedFields(synthesis.spec, first.score);
   // 필드가 빠졌으면 미리보기 행에서도 그 값이 사라져야 하므로 같은 스펙으로 다시 추출한다.
   if (fieldCount(pruned) === fieldCount(synthesis.spec)) {
-    return { status: "accepted", spec: pruned, rows: first.rows, score: first.score };
+    return { status: "accepted", spec: pruned, rows: first.rows, score: first.score, droppedCount };
   }
   const final = verifySpec(html, pageUrl, pruned, read);
-  return { status: "accepted", spec: pruned, rows: final.rows, score: final.score };
+  return { status: "accepted", spec: pruned, rows: final.rows, score: final.score, droppedCount };
+}
+
+function droppedNote(droppedCount: number): string {
+  return droppedCount > 0 ? `, 합성 중 제외 ${droppedCount}건` : "";
 }
 
 function pushAttemptSteps(steps: AnalyzeStep[], attempt: Attempt, willRetry: boolean): void {
@@ -294,12 +328,18 @@ function pushAttemptSteps(steps: AnalyzeStep[], attempt: Attempt, willRetry: boo
       step(
         LABEL.verification,
         "ok",
-        `${metricsText(attempt.score)}, 필드 ${fieldCount(attempt.spec)}개 채택`,
+        `${metricsText(attempt.score)}, 필드 ${fieldCount(attempt.spec)}개 채택${droppedNote(attempt.droppedCount)}`,
       ),
     );
   } else {
     const message = willRetry ? MSG.retrying : MSG.verificationFailed;
-    steps.push(step(LABEL.verification, "warn", `${message} (${metricsText(attempt.score)})`));
+    steps.push(
+      step(
+        LABEL.verification,
+        "warn",
+        `${message} (${metricsText(attempt.score)}${droppedNote(attempt.droppedCount)})`,
+      ),
+    );
   }
 }
 
@@ -360,12 +400,16 @@ async function repairRead(
 // items가 빈 응답을 해석한다. 상세·불명이라고 답했다면 목록이 없다는 판단을 믿는다.
 // 반대로 "list"라면서 항목을 하나도 못 짚은 응답은 스스로 모순이라 믿을 근거가 없으므로
 // 폴백이 목록을 찾게 한다 (judgedNoList=false).
-function interpretEmptyRead(read: PageReadResult, steps: AnalyzeStep[]): LlmPathResult {
+function interpretEmptyRead(
+  read: PageReadResult,
+  outline: PageOutline,
+  steps: AnalyzeStep[],
+): LlmPathResult {
   if (read.pageKind === "list") {
-    steps.push(step(LABEL.read, "warn", MSG.contradictory));
+    steps.push(step(LABEL.read, "warn", withTruncationNote(MSG.contradictory, outline)));
     return { read, accepted: null, judgedNoList: false };
   }
-  steps.push(step(LABEL.read, "ok", MSG.noList));
+  steps.push(step(LABEL.read, "ok", withTruncationNote(MSG.noList, outline)));
   return { read, accepted: null, judgedNoList: true };
 }
 
@@ -404,8 +448,8 @@ async function runLlmPath(
     steps.push(step(LABEL.read, "warn", MSG.callFailed));
     return NO_LLM_RESULT;
   }
-  if (first.items.length === 0) return interpretEmptyRead(first, steps);
-  steps.push(step(LABEL.read, "ok", readDetail(first)));
+  if (first.items.length === 0) return interpretEmptyRead(first, args.outline, steps);
+  steps.push(step(LABEL.read, "ok", withTruncationNote(readDetail(first), args.outline)));
 
   const attempt = synthesizeAndVerify(args, first);
   // 합성 자체가 안 된 경우에는 시도한 셀렉터가 없어 보수 호출로 알려 줄 것이 없다.
@@ -444,7 +488,19 @@ interface FallbackResult {
   strategy: "structured" | "html";
 }
 
+// 폴백은 분석이 가진 마지막 수단이다. 파서가 예기치 못한 입력에 던지면 요청이 500이 되어
+// 사용자가 지금까지 쌓인 단계 로그조차 받지 못한다. 그래서 실패를 값(null + warn 단계)으로 환원한다.
 function runFallback(args: RunAnalysisArgs, steps: AnalyzeStep[]): FallbackResult | null {
+  try {
+    return runFallbackUnguarded(args, steps);
+  } catch (err) {
+    console.error("[analyze] 폴백 추출 중 예외:", err);
+    steps.push(step(LABEL.heuristic, "warn", MSG.fallbackCrashed));
+    return null;
+  }
+}
+
+function runFallbackUnguarded(args: RunAnalysisArgs, steps: AnalyzeStep[]): FallbackResult | null {
   const generated = generateSpec(args.html, args.pageUrl, args.hint);
   if (generated && generated.rows.length >= MIN_FALLBACK_ROWS) {
     steps.push(step(LABEL.heuristic, "ok", `${generated.rows.length}개 항목`));
@@ -476,7 +532,14 @@ function verifiedListCandidates(
   proposed: PageReadResult["listCandidates"],
 ): ParentCandidate[] {
   if (!proposed || proposed.length === 0) return [];
-  const { document } = parseHTML(html);
+  let document: Document;
+  try {
+    ({ document } = parseHTML(html));
+  } catch (err) {
+    // 후보는 부가 정보다. 검증할 수 없으면 신뢰할 수 없는 후보를 내보내느니 비운다.
+    console.error("[analyze] 부모 목록 후보 검증용 파싱 실패:", err);
+    return [];
+  }
   const pageAnchors = new Set<string>();
   for (const a of document.querySelectorAll("a[href]")) {
     const abs = absolutize(a.getAttribute("href") ?? "", pageUrl);

@@ -772,3 +772,77 @@ describe("runAnalysis — 호출 이력", () => {
     expect(r.fieldSource).toBe("heuristic");
   });
 });
+
+describe("runAnalysis — 진단 정보 노출", () => {
+  it("개요가 잘렸으면 AI 해석 단계 detail에 그 사실을 적는다", async () => {
+    const args = argsFor(TABLE_HTML);
+    const outline = { ...args.outline, truncated: true };
+    vi.mocked(readPage).mockResolvedValue(llmResult(goodRead(outline)));
+
+    const r = await runAnalysis({ ...args, outline });
+
+    expect(stepOf(r.steps, "AI 페이지 해석")?.detail).toContain("개요 일부가 잘림");
+  });
+
+  it("개요가 잘리지 않았으면 detail에 잘림 문구가 없다", async () => {
+    const args = argsFor(TABLE_HTML);
+    vi.mocked(readPage).mockResolvedValue(llmResult(goodRead(args.outline)));
+
+    const r = await runAnalysis(args);
+
+    expect(stepOf(r.steps, "AI 페이지 해석")?.detail).not.toContain("잘림");
+  });
+
+  it("합성이 필드를 버리면 검증 단계 detail에 개수를 적고 로그에는 key와 사유만 남긴다", async () => {
+    const args = argsFor(TABLE_HTML);
+    const base = goodRead(args.outline);
+    // key "title"은 고정 컬럼 이름이라 합성이 버린다.
+    const read = {
+      ...base,
+      items: base.items.map((item, i) => ({
+        ...item,
+        fields: [
+          ...item.fields,
+          { key: "title", label: "제목", type: "text" as const, role: "none" as const, ref: refOf(args.outline, ORGS[i]), text: ORGS[i] },
+        ],
+      })),
+    };
+    vi.mocked(readPage).mockResolvedValue(llmResult(read));
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const r = await runAnalysis(args);
+
+    expect(stepOf(r.steps, "셀렉터 합성·검증")?.detail).toContain("합성 중 제외 1건");
+    const line = log.mock.calls.map((c) => String(c[0])).find((l) => l.includes("셀렉터 합성"));
+    expect(line).toContain("remapped=0");
+    expect(line).toContain("dropped=1");
+    expect(line).toContain("title:");
+    // 페이지에서 온 값(제목·기관명)은 로그에 싣지 않는다.
+    for (const text of [...TITLES, ...ORGS]) expect(line).not.toContain(text);
+  });
+
+  it("버린 것이 없으면 detail에 제외 문구가 없다", async () => {
+    const args = argsFor(TABLE_HTML);
+    vi.mocked(readPage).mockResolvedValue(llmResult(goodRead(args.outline)));
+
+    const r = await runAnalysis(args);
+
+    expect(stepOf(r.steps, "셀렉터 합성·검증")?.detail).not.toContain("제외");
+  });
+});
+
+describe("runAnalysis — 순수 파싱이 던질 때", () => {
+  it("폴백의 generateSpec이 던지면 예외 대신 warn 단계와 빈 결과를 돌려준다", async () => {
+    vi.mocked(hasLlm).mockReturnValue(false);
+    vi.mocked(generateSpec).mockImplementationOnce(() => {
+      throw new Error("parser boom");
+    });
+
+    const r = await runAnalysis(argsFor(TABLE_HTML));
+
+    expect(r.spec).toBeNull();
+    expect(r.fieldSource).toBeNull();
+    expect(stepOf(r.steps, "HTML 목록 패턴 추출")).toMatchObject({ status: "warn" });
+    expect(JSON.stringify(r.steps)).not.toContain("parser boom");
+  });
+});

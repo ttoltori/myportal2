@@ -15,7 +15,7 @@ import { fetchPage } from "../crawl/fetcher";
 import { renderPage } from "../crawl/render";
 import { dedupeHash, safeNormalize } from "../crawl/url";
 import { reanalyzeSql } from "./reanalyze.sql";
-import { findSubscribedSource, saveFetchProfile } from "./sources";
+import { findSubscribedSource, loadFetchProfile, saveFetchProfile } from "./sources";
 import { sourcesSql } from "./sources.sql";
 
 const PREVIEW_ROW_LIMIT = 10;
@@ -364,6 +364,26 @@ function parseClientProfile(raw: unknown, sourceId: string): FetchProfile | null
   return null;
 }
 
+// 새 프로파일을 저장하지 못했는데 새 스펙은 렌더링을 요구하고 저장된 프로파일은 렌더링이 아니면,
+// 수집기는 저장된 프로파일을 우선하므로(loadFetchProfile은 값이 있으면 스펙을 보지 않는다)
+// 정적으로 가져와 조용히 0건이 된다. 평시 경로는 화면이 새 프로파일을 함께 보내 안전하지만,
+// 재분석의 프로파일 측정이 실패한 채 적용하면 이 조합이 된다. 프로파일을 추측해 덮어쓰면
+// 더 나쁘므로 동작은 바꾸지 않고 추적할 수 있게 경고만 남긴다.
+// 저장된 값이 비었거나 손상된 경우는 loadFetchProfile이 새 스펙의 render로 유도하므로 해당하지 않는다.
+function warnIfStaticProfileOverridesRender(
+  source: Record<string, unknown>,
+  spec: Record<string, unknown>,
+  sourceId: string,
+): void {
+  if (spec.render !== true) return;
+  // 스펙 인자는 저장된 값이 비었을 때의 유도용인데, 그 경우는 아래에서 걸러내므로 필요 없다.
+  const stored = loadFetchProfile({ fetch_profile: source.fetch_profile }, null);
+  if (stored.fallback !== "none" || stored.profile.mode === "rendered") return;
+  console.warn(
+    `[apply-spec] 새 스펙은 렌더링을 요구하지만 프로파일을 저장하지 못했고 저장된 프로파일은 ${stored.profile.mode}이다 — 수집이 정적으로 가져와 0건이 될 수 있다: source=${sourceId}`,
+  );
+}
+
 // 저장할 스펙의 hint와 hintSetAt을 정한다. 불변식: hintSetAt은 힌트 문자열이 바뀔 때만 갱신된다.
 // 재분석 화면은 저장된 힌트를 입력란에 채워 항상 문자열로 보내므로, "값이 왔다"를 새 입력으로
 // 읽으면 적용할 때마다 시각이 리셋되어 낡음 경고가 영구히 사라진다. 그래서 클라이언트가
@@ -423,6 +443,7 @@ export async function applySpecForSource(
   // repairSpec이 이후 자가복구에서 힌트를 단서로 쓸 수 있도록 hint를 스펙에 싣는다.
   const specToSave = await stampHint(sourceId, spec, input.hint);
   const profile = parseClientProfile(input.profile, sourceId);
+  if (!profile) warnIfStaticProfileOverridesRender(source, spec, sourceId);
   // 일시정지는 사용자의 의도이므로 적용이 풀어서는 안 된다.
   const status = source.status === SOURCE_STATUS_PAUSED ? SOURCE_STATUS_PAUSED : SOURCE_STATUS_OK;
   // 재분석이 새로 발견한 피드는 spec.feedUrl에만 있다. sources.feed_url에 옮기지

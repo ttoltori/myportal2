@@ -651,9 +651,9 @@ function explicitLink(
   return href ? absolutize(href, pageUrl) : null;
 }
 
-// 명시 셀렉터가 가리킨 요소에서 날짜를 읽는다. 요소가 있고 값이 있으면
-// 파싱 실패여도 null을 돌려준다(undefined와 구분) — 전체 텍스트로 폴백하면
-// 마감일 같은 엉뚱한 날짜를 게시일로 집을 수 있다.
+// 명시 셀렉터가 가리킨 요소에서 날짜를 읽는다. 요소가 있으면 값이 비었거나 파싱에 실패해도
+// null을 돌려준다(요소가 없을 때의 undefined와 구분) — 전체 텍스트로 폴백하면
+// 마감일 같은 엉뚱한 날짜를 게시일로 집을 수 있다. 게시일 칸이 빈 행도 마찬가지다.
 function explicitPublished(
   el: Element,
   selector: string | undefined,
@@ -661,7 +661,7 @@ function explicitPublished(
   const target = queryWithin(el, selector);
   if (!target) return undefined;
   const raw = (target.getAttribute("datetime") ?? target.textContent ?? "").trim();
-  return raw ? parseDate(raw) : undefined;
+  return raw ? parseDate(raw) : null;
 }
 
 function applyDomSpec(

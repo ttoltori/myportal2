@@ -631,3 +631,24 @@ describe("SELF_TITLE_SELECTOR (항목 자신의 직계 텍스트를 제목으로
     ]);
   });
 });
+
+describe("게시일 셀렉터가 가리킨 요소가 비었을 때", () => {
+  const pageUrl = "https://x.kr/list";
+  const base: CrawlSpec = { strategy: "html", itemSelector: "li.row", publishedSelector: ".date" };
+  // 게시일 칸은 비었고 항목 텍스트에는 마감일만 있다 — 폴백하면 마감일이 게시일이 된다.
+  const html = `<html><body><ul>
+    <li class="row"><a href="/v/1">공모전 제목 하나입니다</a><span class="date"></span><span class="due">마감 2026-12-31</span></li>
+    <li class="row"><a href="/v/2">공모전 제목 둘입니다</a><span class="date">   </span><span class="due">마감 2026-12-31</span></li>
+  </ul></body></html>`;
+
+  it("요소가 있지만 텍스트가 비면 항목 텍스트로 폴백하지 않고 null이다", () => {
+    const rows = applySpec(html, base, pageUrl);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.publishedAt)).toEqual([null, null]);
+  });
+
+  it("같은 항목이라도 셀렉터를 지정하지 않으면 기존 추측이 마감일을 읽는다 (대조)", () => {
+    const rows = applySpec(html, { strategy: "html", itemSelector: "li.row" }, pageUrl);
+    expect(rows[0].publishedAt).not.toBeNull();
+  });
+});

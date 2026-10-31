@@ -1043,3 +1043,103 @@ describe("applySpecForSource — 백필 매칭", () => {
     expect(reanalyzeSql.itemsForBackfill).toMatch(/\$1/);
   });
 });
+
+// 프로파일을 저장하지 못한 적용이 저장된 static 프로파일 때문에 조용히 0건이 되는 경로의 추적.
+describe("applySpecForSource — 프로파일 미저장 경고", () => {
+  const RENDER_SPEC: CrawlSpec = { strategy: "html", itemSelector: "li", fields: {}, render: true };
+  const MEASURED_AT = "2026-10-31T00:00:00.000Z";
+
+  function withStoredProfile(fetchProfile: unknown) {
+    const base = dbQuery.getMockImplementation();
+    dbQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      const res = (await base?.(sql, params)) as { rows: Record<string, unknown>[] };
+      if (sql === sourcesSql.findById) {
+        return { rows: [{ ...res.rows[0], fetch_profile: fetchProfile }] };
+      }
+      return res;
+    });
+  }
+
+  beforeEach(() => {
+    txQuery.mockImplementation(async (sql: string) =>
+      sql === reanalyzeSql.maxSpecVersion ? { rows: [{ v: 1 }] } : { rows: [] },
+    );
+    vi.mocked(renderPage).mockResolvedValue({
+      finalUrl: SOURCE_URL,
+      html: "<html>rendered</html>",
+      timings: { readyMs: 1000, readyBy: "stabilized", grewByScroll: false },
+    });
+    vi.mocked(extractRows).mockResolvedValue(rows);
+  });
+
+  const warnings = (spy: ReturnType<typeof vi.spyOn>) =>
+    spy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("[apply-spec]"));
+
+  it("새 스펙이 렌더링을 요구하는데 저장된 프로파일이 static이고 새 프로파일이 없으면 경고한다", async () => {
+    withStoredProfile({ mode: "static", measuredAt: MEASURED_AT });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const res = await applySpecForSource(
+      USER,
+      SOURCE,
+      { spec: RENDER_SPEC, fields: [], fetchStrategy: "html" },
+    );
+
+    // 동작은 바꾸지 않는다: 적용은 성공하고 프로파일은 건드리지 않는다.
+    expect(res.version).toBe(2);
+    expect(txCallsOf(sourcesSql.updateFetchProfile)).toHaveLength(0);
+    expect(warnings(warn)).toHaveLength(1);
+    expect(warnings(warn)[0]).toContain(`source=${SOURCE}`);
+    warn.mockRestore();
+  });
+
+  it("저장된 프로파일이 이미 rendered면 경고하지 않는다", async () => {
+    withStoredProfile({ mode: "rendered", measuredAt: MEASURED_AT });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await applySpecForSource(USER, SOURCE, { spec: RENDER_SPEC, fields: [], fetchStrategy: "html" });
+
+    expect(warnings(warn)).toHaveLength(0);
+    warn.mockRestore();
+  });
+
+  it("새 스펙이 렌더링을 요구하지 않으면 경고하지 않는다", async () => {
+    withStoredProfile({ mode: "static", measuredAt: MEASURED_AT });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await applySpecForSource(USER, SOURCE, {
+      spec: { ...RENDER_SPEC, render: undefined },
+      fields: [],
+      fetchStrategy: "html",
+    });
+
+    expect(warnings(warn)).toHaveLength(0);
+    warn.mockRestore();
+  });
+
+  it("새 프로파일을 저장하면 경고하지 않는다", async () => {
+    withStoredProfile({ mode: "static", measuredAt: MEASURED_AT });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await applySpecForSource(USER, SOURCE, {
+      spec: RENDER_SPEC,
+      fields: [],
+      fetchStrategy: "html",
+      profile: { mode: "rendered", settleMs: 3000, measuredAt: MEASURED_AT },
+    });
+
+    expect(txCallsOf(sourcesSql.updateFetchProfile)).toHaveLength(1);
+    expect(warnings(warn)).toHaveLength(0);
+    warn.mockRestore();
+  });
+
+  it("저장된 프로파일이 비어 있으면 수집기가 스펙에서 유도하므로 경고하지 않는다", async () => {
+    withStoredProfile({});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await applySpecForSource(USER, SOURCE, { spec: RENDER_SPEC, fields: [], fetchStrategy: "html" });
+
+    expect(warnings(warn)).toHaveLength(0);
+    warn.mockRestore();
+  });
+});

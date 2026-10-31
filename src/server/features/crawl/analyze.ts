@@ -8,7 +8,7 @@ import type {
 import { getDb } from "../../config/db";
 import { AppError, errorCodes, type ErrorCode } from "../../errors/error-codes";
 import { hintMatchesOutline } from "./analyze/llm-read";
-import { buildPageOutline } from "./analyze/page-outline";
+import { buildPageOutline, type PageOutline } from "./analyze/page-outline";
 import { buildFetchProfile, type FetchProfile } from "./analyze/profile";
 import { runAnalysis, type AnalysisOutcome } from "./analyze/run-analysis";
 import { fetchPage, type FetchResult } from "./fetcher";
@@ -120,7 +120,9 @@ function guessFieldType(v: unknown): SourceField["type"] {
   return "text";
 }
 
-export interface AnalyzeOutcome {
+// 분석이 확정한 추출 계획(스펙)과 그 미리보기 행. runAnalysis의 AnalysisOutcome은 단계·제안값까지
+// 담은 분석 전체 결과이고, 이것은 그중 "무엇을 어떻게 수집할지"만 추린 것이다.
+export interface ListingExtraction {
   spec: CrawlSpec | null;
   rows: ExtractedRow[];
   strategy: "rss" | "structured" | "html";
@@ -134,7 +136,7 @@ const FEED_STEP = "RSS/Atom 피드 확인";
 async function detectFeed(
   page: FetchResult,
   steps: AnalyzeStep[],
-): Promise<AnalyzeOutcome | null> {
+): Promise<ListingExtraction | null> {
   if (looksLikeFeed(page.contentType, page.body)) {
     const rows = parseFeed(page.body, page.finalUrl);
     if (rows.length > 0) {
@@ -205,7 +207,7 @@ function parentCandidates(html: string, pageUrl: string): ParentCandidate[] {
 export interface ListingAnalysis {
   steps: AnalyzeStep[];
   pageTitle: string | null;
-  outcome: AnalyzeOutcome | null; // null = 목록 패턴 없음
+  outcome: ListingExtraction | null; // null = 목록 패턴 없음
   fieldSource: "llm" | "heuristic" | null;
   pageText: string | null; // 힌트 미스 시 텍스트 스냅샷
   staticHtml: string; // parentCandidates용 정적 HTML
@@ -357,6 +359,21 @@ function withRenderFlag(spec: CrawlSpec, profile: FetchProfile | null): CrawlSpe
   return spec;
 }
 
+const OUTLINE_STEP = "페이지 개요 생성";
+
+// 개요 생성은 순수 파싱이라 던지지 않는 것이 원칙이지만, 던지면 요청이 500이 되어 사용자가
+// 단계 로그를 하나도 받지 못한다. 빈 개요로 환원하면 runAnalysis가 "읽을 내용 없음"으로
+// LLM 호출을 건너뛰고 패턴 추정 폴백으로 내려간다.
+function outlineOrEmpty(html: string, steps: AnalyzeStep[]): PageOutline {
+  try {
+    return buildPageOutline(html);
+  } catch (err) {
+    console.error("[analyze] 페이지 개요 생성 실패:", err);
+    steps.push(step(OUTLINE_STEP, "warn", "페이지 개요를 만들지 못했습니다 — 패턴 추정으로 진행"));
+    return { text: "", refs: [], truncated: false, document: parseHTML("<html></html>").document };
+  }
+}
+
 // robots → 정적 fetch → (피드면 종료) → 렌더링 → 개요 → LLM 해석·합성·검증 → 프로파일.
 // 신규 등록(analyzeUrl)과 재분석이 같은 분석을 쓰도록, 중복 확인 앞뒤를 떼어낸 코어다.
 export async function analyzeListing(args: {
@@ -435,7 +452,7 @@ export async function analyzeListing(args: {
 
   // 6. 렌더링 → 개요 → 해석
   const rendered = await renderForAnalysis(page, url, steps);
-  const outline = buildPageOutline(rendered.html);
+  const outline = outlineOrEmpty(rendered.html, steps);
   const analysis = await runAnalysis({
     html: rendered.html,
     pageUrl: rendered.url,
@@ -462,7 +479,7 @@ export async function analyzeListing(args: {
         pageUrl: rendered.url,
       })
     : null;
-  const outcome: AnalyzeOutcome | null = spec
+  const outcome: ListingExtraction | null = spec
     ? {
         spec: withRenderFlag(spec, profile),
         rows: analysis.rows,

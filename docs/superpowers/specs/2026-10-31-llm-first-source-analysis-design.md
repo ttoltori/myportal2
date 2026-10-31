@@ -133,7 +133,6 @@ src/server/features/crawl/
 └─ llm/
    ├─ llm-client.ts            (변경 없음 — 전송 계층)
    ├─ usage.ts, usage.sql.ts   (변경 없음 — 쿼터·기록)
-   ├─ html-digest.ts           (유지 — repair 호출의 항목 HTML 축약에 사용)
    ├─ enrich.ts                ✂ 삭제
    └─ field-inference.ts       ✂ 삭제
 ```
@@ -219,7 +218,7 @@ export function buildPageOutline(html: string): PageOutline;
 
 규칙:
 
-- `stripNoise` 적용 후 `svg` 추가 제거(`stripNoise`는 `svg`를 지우지 않는다).
+- `stripNoise` 적용 후에 `svg` 등을 추가로 제거하지 않는다. 개요가 `applySpec`보다 더 지우면 `nth-child` 경로의 위치가 개요 문서와 수집 문서에서 어긋나, 검증은 통과하는데 수집은 엉뚱한 요소를 뽑는다(위 불변식).
 - 텍스트 노드는 공백 정규화 후 `TEXT_NODE_LIMIT`(120자)로 절단. 빈 노드는 번호를 받지 않는다.
 - 앵커는 `a→경로 "텍스트"` 형태로 href를 함께 보인다(쿼리 포함, 길면 절단). LLM이 항목 링크와 메뉴 링크를 구분하는 핵심 단서다.
 - `img`는 `img→src "alt"`로 표기(필드 role=image 후보).
