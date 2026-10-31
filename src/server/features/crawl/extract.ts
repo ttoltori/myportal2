@@ -421,7 +421,7 @@ function looksLikeContentContainer(el: Element): boolean {
   return false;
 }
 
-function stripNoise(document: Document): void {
+export function stripNoise(document: Document): void {
   for (const sel of [
     "script",
     "style",
