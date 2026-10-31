@@ -2,11 +2,9 @@ import { getDb } from "../../../config/db";
 import { env } from "../../../config/env";
 import { llmUsageSql } from "./usage.sql";
 
-export type LlmPurpose =
-  | "analyze-fields"
-  | "analyze-rescue"
-  | "rebuild"
-  | "self-repair";
+// llm_calls.purpose에는 check 제약이 없고 과거 행에 "analyze-rescue"가 남아 있을 수 있다.
+// 구제 모드는 폐지되어 새로 기록하지 않으므로 타입에서만 뺀다.
+export type LlmPurpose = "analyze-fields" | "rebuild" | "self-repair";
 
 export interface LlmCallEntry {
   userId: string | null;

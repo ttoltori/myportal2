@@ -107,7 +107,7 @@ export async function reanalyzeSource(
     // 입력 시각을 넘기지 않으면 재분석할 때마다 "지금"으로 덮어써져 낡음 표시가 영구히 사라진다.
     hintSetAt: reusesStored ? (stored.setAt ?? undefined) : undefined,
     sourceId,
-    // 보강·구제 양쪽에 rebuild가 그대로 쓰이도록 analyze-fields를 넘기지 않는다.
+    // 재분석 호출이 신규 등록(analyze-fields)과 섞이지 않도록 llm_calls에 rebuild로 구분해 남긴다.
     purpose: "rebuild",
   });
 

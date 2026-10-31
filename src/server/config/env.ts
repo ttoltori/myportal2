@@ -51,7 +51,8 @@ export const env = {
   // 비어 있으면 로컬은 시스템 Chrome, 운영(Vercel)은 @sparticuz/chromium을 쓴다.
   chromiumPath: (process.env.CHROMIUM_PATH ?? "").trim(),
 
-  // LLM 기반 추출 필드 추론. 키가 비어 있으면 DOM 휴리스틱만 사용한다.
+  // 소스 분석은 LLM이 페이지를 먼저 읽어 목록·필드를 해석한다. 키가 비어 있으면
+  // LLM을 호출하지 않고 DOM 휴리스틱 결과로 폴백한다.
   llmApiBase:
     (process.env.LLM_API_BASE ?? "").trim() || "https://api.openai.com/v1",
   llmApiKey: (process.env.LLM_API_KEY ?? "").trim(),

@@ -13,7 +13,7 @@ import { buildFetchProfile, type FetchProfile } from "./analyze/profile";
 import { runAnalysis, type AnalysisOutcome } from "./analyze/run-analysis";
 import { fetchPage, type FetchResult } from "./fetcher";
 import type { LlmPurpose } from "./llm/usage";
-import { renderPage, type RenderTimings } from "./render";
+import { renderPage, type RenderOptions, type RenderTimings } from "./render";
 import { robotsAllowed } from "./robots";
 import {
   discoverFeedUrl,
@@ -273,6 +273,16 @@ function renderStep(timings: RenderTimings): AnalyzeStep {
   );
 }
 
+// 분석은 항상 끝까지 스크롤해 본다. 스크롤로 항목이 늘어나는 사이트인지(grewByScroll)는 분석 시점에
+// 측정해야 프로파일의 scrollToBottom으로 남길 수 있고, 스크롤하지 않으면 grewByScroll이 항상 false라
+// 지연 로딩 목록이 첫 화면 분량만 수집된다.
+// 수집(collector)은 반대로 프로파일에 scrollToBottom이 있을 때만 스크롤한다. 이미 지연 로딩으로
+// 판정된 소스에만 스크롤 비용을 내고, 나머지 소스는 매 수집마다 스크롤 대기를 물지 않게 하려는 비대칭이다.
+// 비용: 스크롤은 최대 MAX_SCROLLS회(render.ts)이고 높이가 늘지 않으면 일찍 멈추지만, 그만큼 렌더링이
+// 길어진다. runAnalysis가 경과 시간(startedAt)으로 LLM 시도 timeout을 정하므로 스크롤이 길수록
+// LLM에 줄 시간이 줄어든다.
+const ANALYZE_RENDER_OPTIONS: RenderOptions = { scrollToBottom: true };
+
 // 렌더링이 실패해도 분석을 포기하지 않는다 — 정적 HTML에도 목록이 있는 사이트가 많다.
 // 다만 로딩 완료를 보장하지 못한 사실은 단계로 남긴다.
 async function renderForAnalysis(
@@ -285,7 +295,7 @@ async function renderForAnalysis(
     // 서버에 전송되지 않아 사라진다. SPA hash 라우팅 사이트(예: sbiz24.kr의
     // #/combinePbancList)는 hash가 있어야 올바른 페이지가 로드되므로
     // 원본 URL의 hash를 보존한 채 렌더링한다.
-    const rendered = await renderPage(withHashRoute(page.finalUrl, originalUrl));
+    const rendered = await renderPage(withHashRoute(page.finalUrl, originalUrl), ANALYZE_RENDER_OPTIONS);
     steps.push(renderStep(rendered.timings));
     return { html: rendered.html, url: rendered.finalUrl, timings: rendered.timings };
   } catch (err) {

@@ -250,6 +250,32 @@ describe("analyzeUrl", () => {
     expect(r.steps.find((s) => s.label === "브라우저 렌더링")).toMatchObject({ status: "warn" });
   });
 
+  it("분석은 렌더링을 scrollToBottom: true로 호출한다", async () => {
+    await analyzeUrl("u1", URL_IN);
+
+    expect(vi.mocked(renderPage).mock.calls[0][1]).toMatchObject({ scrollToBottom: true });
+  });
+
+  it("스크롤로 항목이 늘어난 렌더 결과는 프로파일의 scrollToBottom으로 이어진다", async () => {
+    // scrollToBottom은 렌더링이 필요한 프로파일에만 담기므로, 정적 HTML에는 목록이 없게 한다.
+    vi.mocked(fetchPage).mockResolvedValue(page(DETAIL_HTML));
+    vi.mocked(renderPage).mockResolvedValue({
+      ...rendered(LIST_HTML),
+      timings: { ...READY_TIMINGS, grewByScroll: true },
+    });
+
+    const r = await analyzeUrl("u1", URL_IN);
+
+    expect(r.preview?.profile).toMatchObject({ mode: "rendered", scrollToBottom: true });
+  });
+
+  it("스크롤로 늘지 않았으면 프로파일에 scrollToBottom이 없다", async () => {
+    vi.mocked(fetchPage).mockResolvedValue(page(DETAIL_HTML));
+    const r = await analyzeUrl("u1", URL_IN);
+
+    expect(r.preview?.profile).not.toHaveProperty("scrollToBottom");
+  });
+
   it("피드 URL은 렌더링과 LLM 호출 없이 끝낸다", async () => {
     const rss = `<?xml version="1.0"?><rss version="2.0"><channel>${[1, 2, 3]
       .map((i) => `<item><title>공고 ${i}</title><link>/n/${i}</link></item>`)
