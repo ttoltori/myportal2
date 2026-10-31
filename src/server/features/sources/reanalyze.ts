@@ -110,6 +110,7 @@ export async function reanalyzeSource(
       preview: null,
       fieldSource: null,
       errorCode: listing.blocked.code,
+      storedHint: null,
     };
   }
 
@@ -125,6 +126,7 @@ export async function reanalyzeSource(
       preview: null,
       fieldSource: null,
       errorCode: errorCodes.PAGE_TYPE_UNKNOWN,
+      storedHint: null,
     };
   }
 
@@ -146,6 +148,7 @@ export async function reanalyzeSource(
     },
     fieldSource: listing.fieldSource,
     errorCode: null,
+    storedHint: null,
   };
 }
 

@@ -247,6 +247,8 @@ export const analyzeResultSchema = z.object({
       rows: z.array(z.record(z.unknown())),
       fetchStrategy: fetchStrategySchema,
       spec: z.unknown().nullable(),
+      // 분석이 측정한 수집 프로파일. spec과 같은 관례로 unknown이며 서버가 등록 시 재검증한다.
+      profile: z.unknown().nullable(),
     })
     .nullable(),
   suggested: z.object({
@@ -276,6 +278,8 @@ export const createSourceRequestSchema = z.object({
   // 없으면 서버가 등록 시점에 다시 추출한다(분석 화면과 다른 결과가 나올 수 있음).
   spec: z.unknown().nullable().optional(),
   previewRows: z.array(z.record(z.unknown())).optional(),
+  // 분석이 측정한 수집 프로파일. 서버가 스키마로 재검증하며 맞지 않으면 무시한다.
+  profile: z.unknown().nullable().optional(),
 });
 export type CreateSourceRequest = z.infer<typeof createSourceRequestSchema>;
 
@@ -319,11 +323,21 @@ export const reanalyzeResultSchema = z.object({
       rows: z.array(z.record(z.unknown())),
       fetchStrategy: fetchStrategySchema,
       spec: z.unknown().nullable(),
+      // 분석이 측정한 수집 프로파일. spec과 같은 관례로 unknown이며 서버가 등록 시 재검증한다.
+      profile: z.unknown().nullable(),
     })
     .nullable(),
   // 지금 저장된 필드. 패널이 '무엇이 바뀌는지'를 보여주고,
   // 이번 분석에서 발견되지 않은 기존 필드 수를 세는 데 쓴다.
   currentFields: z.array(sourceFieldSchema),
+  // 저장된 힌트가 언제 입력되었고 지금 페이지에서 매칭되는지 화면에 보이기 위한 값.
+  storedHint: z
+    .object({
+      value: z.string(),
+      setAt: z.string().nullable(),
+      matchesPage: z.boolean(),
+    })
+    .nullable(),
   pageText: z.string().nullable(),
   fieldSource: z.enum(["llm", "heuristic"]).nullable(),
   errorCode: z.string().nullable(),
@@ -336,6 +350,7 @@ export const applySpecRequestSchema = z.object({
   fields: z.array(sourceFieldSchema).max(30),
   fetchStrategy: fetchStrategySchema,
   hint: z.string().trim().min(2).max(500).optional(),
+  profile: z.unknown().nullable().optional(),
 });
 export type ApplySpecRequest = z.infer<typeof applySpecRequestSchema>;
 

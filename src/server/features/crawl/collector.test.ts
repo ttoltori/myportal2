@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb } from "../../config/db";
 import { AppError, errorCodes } from "../../errors/error-codes";
 import { sourcesSql } from "../sources/sources.sql";
-import { repairSpec } from "./collector";
+import { createSourceWithBaseline, repairSpec } from "./collector";
 import { enrichWithLlm, type EnrichResult } from "./llm/enrich";
 import { fetchPage } from "./fetcher";
 import { renderPage } from "./render";
@@ -196,5 +196,104 @@ describe("repairSpec", () => {
 
     expect(out).toBeNull();
     expect(db.inserted()).toBeNull();
+  });
+});
+
+// ── createSourceWithBaseline: 수집 프로파일 저장 ───────────
+// 클라이언트가 보낸 프로파일은 신뢰하지 않고 서버에서 다시 검증한다.
+
+const VALID_PROFILE = {
+  mode: "rendered",
+  waitForSelector: "li.row",
+  settleMs: 3000,
+  measuredAt: "2026-10-31T00:00:00.000Z",
+};
+
+function fakeCreateDb(existingSourceId: string | null) {
+  const profileWrites: unknown[][] = [];
+  const query = vi.fn(async (sql: string, params?: unknown[]) => {
+    if (sql === sourcesSql.findByNormalizedUrl) {
+      return { rows: existingSourceId ? [{ id: existingSourceId }] : [] };
+    }
+    if (sql === sourcesSql.insertSource) return { rows: [{ id: "src-new" }] };
+    if (sql === sourcesSql.insertSubscription) return { rows: [{ id: "sub-new" }] };
+    if (sql === sourcesSql.updateFetchProfile) {
+      profileWrites.push(params ?? []);
+      return { rows: [] };
+    }
+    return { rows: [] };
+  });
+  const db = { query, transaction: vi.fn(), profileWrites };
+  db.transaction.mockImplementation(async (cb: (tx: unknown) => unknown) => cb(db));
+  vi.mocked(getDb).mockReturnValue(db as never);
+  return db;
+}
+
+function createInput(profile?: unknown) {
+  return {
+    url: PAGE_URL,
+    displayName: "공지",
+    categoryId: null,
+    tagNames: [],
+    fields: [],
+    fetchStrategy: "html",
+    linkOnly: false,
+    spec: { strategy: "html", itemSelector: "li.row" } as CrawlSpec,
+    previewRows: llmRows,
+    profile,
+  };
+}
+
+describe("createSourceWithBaseline - 수집 프로파일", () => {
+  it("createSource가 전달된 프로파일을 검증해 저장한다", async () => {
+    const db = fakeCreateDb(null);
+
+    await createSourceWithBaseline("user-1", createInput(VALID_PROFILE));
+
+    expect(db.profileWrites).toHaveLength(1);
+    expect(db.profileWrites[0][0]).toBe("src-new");
+    expect(JSON.parse(String(db.profileWrites[0][1]))).toEqual(VALID_PROFILE);
+  });
+
+  it("프로파일이 스키마에 맞지 않으면 무시하고 프로파일 없이 등록한다", async () => {
+    const db = fakeCreateDb(null);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // mode 값이 틀리고 measuredAt이 없다 — 클라이언트 값은 신뢰하지 않는다.
+    const out = await createSourceWithBaseline(
+      "user-1",
+      createInput({ mode: "teleport", settleMs: -5 }),
+    );
+
+    expect(out.sourceId).toBe("src-new");
+    expect(out.subscriptionId).toBe("sub-new");
+    expect(db.profileWrites).toHaveLength(0);
+    // 폐기는 흔적을 남기되 클라이언트가 보낸 원본 값은 로그에 싣지 않는다.
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    const logged = String(errSpy.mock.calls[0][0]);
+    expect(logged).toContain("[source-create]");
+    expect(logged).toContain(PAGE_URL);
+    expect(logged).not.toContain("teleport");
+    errSpy.mockRestore();
+  });
+
+  it("프로파일이 없으면 fetch_profile을 건드리지 않는다", async () => {
+    const db = fakeCreateDb(null);
+
+    await createSourceWithBaseline("user-1", createInput(undefined));
+    await createSourceWithBaseline("user-1", createInput(null));
+
+    expect(db.profileWrites).toHaveLength(0);
+  });
+
+  it("기존 소스를 재사용하는 등록은 프로파일을 덮어쓰지 않는다", async () => {
+    // 다른 사용자가 이미 등록한 소스의 수집 설정을 신규 구독이 바꿔선 안 된다.
+    const db = fakeCreateDb("src-existing");
+
+    const out = await createSourceWithBaseline("user-1", createInput(VALID_PROFILE));
+
+    expect(out.reusedExisting).toBe(true);
+    expect(out.sourceId).toBe("src-existing");
+    expect(db.profileWrites).toHaveLength(0);
   });
 });

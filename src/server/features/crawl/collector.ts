@@ -18,6 +18,8 @@ import { matchNewItemsForSubscribers } from "../keywords/match";
 import { clusterItems } from "./cluster";
 import { dedupeHash, normalizeUrl, safeNormalize } from "./url";
 import { sourcesSql } from "../sources/sources.sql";
+import { saveFetchProfile } from "../sources/sources";
+import { fetchProfileSchema, type FetchProfile } from "./analyze/profile";
 
 const BASELINE_SIZE = 20;
 const MIN_INTERVAL = 15;
@@ -382,10 +384,13 @@ export async function createSourceWithBaseline(
     linkOnly: boolean;
     spec?: CrawlSpec | null;
     previewRows?: ExtractedRow[];
+    // 클라이언트가 분석 결과에서 되돌려 보낸 수집 프로파일. 신뢰할 수 없는 입력이다.
+    profile?: unknown;
   },
 ): Promise<{ subscriptionId: string; sourceId: string; baselineCount: number; reusedExisting: boolean }> {
   const db = getDb();
   const normalized = normalizeUrl(input.url);
+  const profile = parseClientProfile(input.profile, input.url);
 
   if (input.categoryId) {
     const { rows: cat } = await db.query<{ id: string }>(
@@ -447,6 +452,9 @@ export async function createSourceWithBaseline(
           "heuristic",
         ]);
       }
+      // 재사용 분기에서는 저장하지 않는다: 다른 사용자가 등록한 공유 소스의 수집 설정을
+      // 신규 구독자가 바꿀 수 없다. 트랜잭션 안에서 저장해 부분 실패를 남기지 않는다.
+      if (profile) await saveFetchProfile(sourceId, profile, tx);
     }
 
     const { rows: dup } = await tx.query<{ id: string }>(
@@ -500,6 +508,22 @@ export async function createSourceWithBaseline(
 
     return { subscriptionId, sourceId, baselineCount, reusedExisting: reused };
   });
+}
+
+// 검증에 실패해도 예외를 던지지 않는다. 프로파일은 수집 최적화 정보일 뿐이라,
+// 형태 불일치로 사용자의 등록이 실패하면 안 된다(프로파일 없이 레거시 폴백으로 수집된다).
+// 다만 렌더링이 필요한 소스가 흔적 없이 정적 수집으로 내려가면 추적할 수 없으므로 로그는 남긴다.
+// 원본 값은 클라이언트가 보낸 임의 데이터라 싣지 않고, 실패 위치(path)와 코드만 요약한다.
+function parseClientProfile(raw: unknown, url: string): FetchProfile | null {
+  if (raw == null) return null;
+  const parsed = fetchProfileSchema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  const reasons = parsed.error.issues
+    .slice(0, 5)
+    .map((i) => `${i.path.join(".") || "(root)"}:${i.code}`)
+    .join(", ");
+  console.error(`[source-create] 수집 프로파일 검증 실패, 프로파일 없이 등록: url=${url} issues=${reasons}`);
+  return null;
 }
 
 async function upsertTag(

@@ -47,6 +47,7 @@ export const sourcesRoutes = new Hono()
         linkOnly: d.linkOnly,
         spec: (d.spec as CrawlSpec | null) ?? null,
         previewRows: (d.previewRows ?? []).map(toExtractedRow),
+        profile: d.profile,
       }),
       201,
     );
