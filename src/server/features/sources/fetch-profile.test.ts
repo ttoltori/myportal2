@@ -11,7 +11,7 @@ vi.mock("../desk/desk", () => ({ mapItem: vi.fn() }));
 
 import type { CrawlSpec } from "../crawl/extract";
 import type { FetchProfile } from "../crawl/analyze/profile";
-import { loadFetchProfile, saveFetchProfile } from "./sources";
+import { isRenderedSource, loadFetchProfile, saveFetchProfile } from "./sources";
 import { sourcesSql } from "./sources.sql";
 
 const renderSpec = { strategy: "html", render: true } as unknown as CrawlSpec;
@@ -116,5 +116,32 @@ describe("saveFetchProfile", () => {
 describe("sourcesSql.findById", () => {
   it("fetch_profile 컬럼을 조회한다", () => {
     expect(sourcesSql.findById).toContain("fetch_profile");
+  });
+});
+
+describe("isRenderedSource", () => {
+  it("저장된 프로파일의 mode가 rendered면 스펙과 무관하게 true", () => {
+    expect(isRenderedSource({ fetch_profile: stored }, staticSpec)).toBe(true);
+    expect(isRenderedSource({ fetch_profile: stored }, null)).toBe(true);
+  });
+
+  it("저장된 프로파일이 static이면 spec.render가 있어도 false (프로파일이 우선)", () => {
+    const staticProfile: FetchProfile = { mode: "static", measuredAt: stored.measuredAt };
+    expect(isRenderedSource({ fetch_profile: staticProfile }, renderSpec)).toBe(false);
+  });
+
+  it("빈 프로파일 레거시 소스는 spec.render로 유도한다", () => {
+    expect(isRenderedSource({ fetch_profile: {} }, renderSpec)).toBe(true);
+    expect(isRenderedSource({ fetch_profile: {} }, staticSpec)).toBe(false);
+    expect(isRenderedSource({ fetch_profile: null }, null)).toBe(false);
+  });
+
+  it("손상된 프로파일도 spec.render로 폴백한다", () => {
+    expect(isRenderedSource({ fetch_profile: { mode: "bogus" } }, renderSpec)).toBe(true);
+  });
+
+  it("jsonb가 문자열로 와도 스펙을 읽는다", () => {
+    expect(isRenderedSource({ fetch_profile: {} }, JSON.stringify(renderSpec))).toBe(true);
+    expect(isRenderedSource({ fetch_profile: {} }, "{not json")).toBe(false);
   });
 });

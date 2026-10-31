@@ -2,6 +2,8 @@ import type { Subscription } from "@myportal/api-contracts";
 import type { DatabaseClient } from "@ttoltori/database";
 import { getDb } from "../../config/db";
 import { AppError, errorCodes } from "../../errors/error-codes";
+import { isRenderedSource } from "../sources/sources";
+import { activeSpecJoinSql } from "../sources/sources.sql";
 
 interface SubRow {
   id: string;
@@ -14,24 +16,28 @@ interface SubRow {
   status: string;
   last_success_at: string | null;
   interval_minutes: number;
+  fetch_profile: unknown;
+  spec: unknown;
 }
 
 const sql = {
   list: `
     select s.id, s.source_id, s.display_name, s.category_id, s.paused,
            src.url, src.fetch_strategy, src.status, src.last_success_at,
-           src.interval_minutes
+           src.interval_minutes, src.fetch_profile, active_spec.spec
     from myportal.subscriptions s
     join myportal.sources src on src.id = s.source_id
+    ${activeSpecJoinSql}
     where s.user_id = $1
     order by s.display_name
   `,
   find: `
     select s.id, s.source_id, s.display_name, s.category_id, s.paused,
            src.url, src.fetch_strategy, src.status, src.last_success_at,
-           src.interval_minutes
+           src.interval_minutes, src.fetch_profile, active_spec.spec
     from myportal.subscriptions s
     join myportal.sources src on src.id = s.source_id
+    ${activeSpecJoinSql}
     where s.id = $1 and s.user_id = $2
   `,
   update: `
@@ -89,6 +95,7 @@ async function mapSub(db: DatabaseClient, r: SubRow): Promise<Subscription> {
     categoryId: r.category_id,
     tagIds: tags.rows.map((t) => t.tag_id),
     fetchStrategy: r.fetch_strategy as Subscription["fetchStrategy"],
+    rendered: isRenderedSource(r, r.spec),
     status: r.status as Subscription["status"],
     lastSuccessAt: r.last_success_at
       ? new Date(r.last_success_at).toISOString()

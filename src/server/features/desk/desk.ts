@@ -9,6 +9,7 @@ import type {
 } from "@myportal/api-contracts";
 import { getDb } from "../../config/db";
 import { deskSql } from "./desk.sql";
+import { isRenderedSource } from "../sources/sources";
 import { parseDate } from "../crawl/extract";
 
 const DESK_ITEM_LIMIT = 200;
@@ -126,6 +127,7 @@ export async function getDeskPayload(userId: string): Promise<DeskPayload> {
       category_id: string | null; paused: boolean; url: string;
       fetch_strategy: string; status: string;
       last_success_at: string | null; interval_minutes: number;
+      fetch_profile: unknown; spec: unknown;
     }>(deskSql.subscriptions, [userId]),
     db.query<{ subscription_id: string; tag_id: string }>(deskSql.subscriptionTags, [userId]),
     db.query<{ source_id: string; c: number }>(deskSql.newCounts7d, [userId]),
@@ -183,6 +185,7 @@ export async function getDeskPayload(userId: string): Promise<DeskPayload> {
     categoryId: s.category_id,
     tagIds: tagsBySub.get(s.id) ?? [],
     fetchStrategy: s.fetch_strategy as Subscription["fetchStrategy"],
+    rendered: isRenderedSource(s, s.spec),
     status: s.status as Subscription["status"],
     lastSuccessAt: toIso(s.last_success_at),
     new7d: newCountBySource.get(s.source_id) ?? 0,

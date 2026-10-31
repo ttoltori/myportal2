@@ -1,3 +1,5 @@
+import { activeSpecJoinSql } from "../sources/sources.sql";
+
 export const deskSql = {
   categories: `
     select id, name, parent_id, sort_order
@@ -14,9 +16,10 @@ export const deskSql = {
   subscriptions: `
     select s.id, s.source_id, s.display_name, s.category_id, s.paused,
            src.url, src.fetch_strategy, src.status, src.last_success_at,
-           src.interval_minutes
+           src.interval_minutes, src.fetch_profile, active_spec.spec
     from myportal.subscriptions s
     join myportal.sources src on src.id = s.source_id
+    ${activeSpecJoinSql}
     where s.user_id = $1
     order by s.display_name
   `,

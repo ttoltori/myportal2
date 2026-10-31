@@ -30,6 +30,11 @@ const STRATEGY_LABELS: Record<string, string> = {
   link: "링크 전용",
 };
 
+// 기존 DB 행의 'rendered' 전략은 호환용으로 남아 있으며 html과 같게 취급한다.
+function isHtmlStrategy(strategy: string): boolean {
+  return strategy === "html" || strategy === "rendered";
+}
+
 function formatDateTime(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -87,8 +92,15 @@ export default function SourcesPage() {
 
   const filtered = (subs ?? []).filter((s) => {
     if (filters.status !== "all" && s.status !== filters.status) return false;
-    if (filters.strategy !== "all" && s.fetchStrategy !== filters.strategy)
+    // 렌더링 여부는 추출 방식(fetchStrategy)과 별개 축이다(html + 렌더링 프로파일).
+    // '정적 HTML'에 렌더링 소스가 섞이지 않게 두 필터를 서로 배타적으로 만든다.
+    if (filters.strategy === "rendered") {
+      if (!s.rendered) return false;
+    } else if (filters.strategy === "html") {
+      if (s.rendered || !isHtmlStrategy(s.fetchStrategy)) return false;
+    } else if (filters.strategy !== "all" && s.fetchStrategy !== filters.strategy) {
       return false;
+    }
     const t = filters.text.trim().toLowerCase();
     if (
       t &&

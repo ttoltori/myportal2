@@ -105,6 +105,9 @@ export const subscriptionSchema = z.object({
   categoryId: z.string().nullable(),
   tagIds: z.array(z.string()),
   fetchStrategy: fetchStrategySchema,
+  // 렌더링(헤드리스 브라우저) 필요 여부. 추출 방식(fetchStrategy)과 별개 축이라
+  // 'html'이면서 true일 수 있다. 기존 'rendered' 전략 행도 true로 내려간다.
+  rendered: z.boolean(),
   status: sourceStatusSchema,
   lastSuccessAt: z.string().nullable(),
   new7d: z.number(),

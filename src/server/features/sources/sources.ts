@@ -59,7 +59,7 @@ async function subscriptionShape(
   source: Record<string, unknown>,
 ): Promise<Subscription> {
   const db = getDb();
-  const [tags, count, fields] = await Promise.all([
+  const [tags, count, fields, activeSpec] = await Promise.all([
     db.query<{ tag_id: string }>(
       `select tag_id from myportal.subscription_tags where subscription_id = $1`,
       [sub.id],
@@ -74,6 +74,7 @@ async function subscriptionShape(
       key: string; label: string; type: string; role: string;
       sort_order: number; visible: boolean;
     }>(sourcesSql.fieldsForSource, [sourceId]),
+    db.query<{ spec: unknown }>(sourcesSql.latestActiveSpec, [sourceId]),
   ]);
   return {
     id: sub.id,
@@ -83,6 +84,7 @@ async function subscriptionShape(
     categoryId: sub.category_id,
     tagIds: tags.rows.map((t) => t.tag_id),
     fetchStrategy: source.fetch_strategy as Subscription["fetchStrategy"],
+    rendered: isRenderedSource(source as { fetch_profile: unknown }, activeSpec.rows[0]?.spec ?? null),
     status: source.status as Subscription["status"],
     lastSuccessAt: source.last_success_at
       ? new Date(String(source.last_success_at)).toISOString()
@@ -238,4 +240,31 @@ export function loadFetchProfile(
   return parsed.success
     ? { profile: parsed.data, fallback: "none" }
     : { profile: profileFromLegacySpec(spec), fallback: "corrupt" };
+}
+
+// jsonb 컬럼은 pg가 객체로 주지만 문자열로 올 수도 있어 둘 다 받는다. 스펙에서 폴백 판정에
+// 쓰는 건 strategy/render뿐이라 객체 여부만 확인하고, 아니면 스펙 없음으로 본다.
+function toCrawlSpec(raw: unknown): CrawlSpec | null {
+  let value = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as CrawlSpec)
+    : null;
+}
+
+// 화면의 "렌더링" 필터가 쓰는 값. 렌더링 필요 여부는 fetch_strategy가 아니라 프로파일의 mode가
+// 담으므로(분석은 'rendered' 전략을 더 이상 내지 않는다) 수집기와 같은 loadFetchProfile로
+// 판정한다. 판정 규칙을 따로 복제하면 프로파일이 비거나 손상된 기존 소스에서 수집기와 화면이
+// 어긋난다.
+export function isRenderedSource(
+  row: { fetch_profile: unknown },
+  spec: unknown,
+): boolean {
+  return loadFetchProfile(row, toCrawlSpec(spec)).profile.mode === "rendered";
 }
