@@ -228,6 +228,9 @@ export const analyzeRequestSchema = z.object({
   // 목록에 포함되어야 하는 항목의 텍스트 일부.
   // 자동 추정이 엉뚱한 영역(메뉴 등)을 잡을 때 사용자가 직접 지정한다.
   hint: z.string().trim().min(2).max(500).optional(),
+  // robots.txt 금지를 무시하고 분석할지. 기본은 준수(false)이며 사용자가 화면에서
+  // 명시적으로 켜야 true가 된다. 등록까지 가면 소스에 보관되어 수집도 같은 선택을 따른다.
+  ignoreRobots: z.boolean().default(false),
 });
 export type AnalyzeRequest = z.infer<typeof analyzeRequestSchema>;
 
@@ -283,6 +286,10 @@ export const createSourceRequestSchema = z.object({
   previewRows: z.array(z.record(z.unknown())).optional(),
   // 분석이 측정한 수집 프로파일. 서버가 스키마로 재검증하며 맞지 않으면 무시한다.
   profile: z.unknown().nullable().optional(),
+  // 분석에서 robots.txt를 무시했다면 그 선택을 소스에 남긴다. 남기지 않으면 등록된 소스가
+  // 첫 수집에서 robots 금지로 pause되어 등록이 무의미해진다.
+  // 이미 있는 소스를 재사용하는 등록에서는 무시된다(공유 소스의 설정을 새 구독자가 바꿀 수 없다).
+  ignoreRobots: z.boolean().default(false),
 });
 export type CreateSourceRequest = z.infer<typeof createSourceRequestSchema>;
 
@@ -310,6 +317,9 @@ export const reanalyzeRequestSchema = z.object({
     .max(500)
     .refine((v) => v === "" || v.length >= 2, "힌트는 2자 이상이어야 합니다.")
     .optional(),
+  // robots.txt 금지를 무시할지. 생략하면 소스에 저장된 설정(sources.ignore_robots)을 쓴다 —
+  // 재분석은 아무것도 저장하지 않으므로 이 값은 이번 분석에만 적용되고, 확정은 apply-spec이 한다.
+  ignoreRobots: z.boolean().optional(),
 });
 export type ReanalyzeRequest = z.infer<typeof reanalyzeRequestSchema>;
 
@@ -364,6 +374,9 @@ export const applySpecRequestSchema = z.object({
     .refine((v) => v === "" || v.length >= 2, "힌트는 2자 이상이어야 합니다.")
     .optional(),
   profile: z.unknown().nullable().optional(),
+  // robots.txt 무시 설정을 확정한다. 생략은 "저장된 설정을 그대로 둔다" — 이 값을 다루지 않는
+  // 호출처가 적용해도 사용자가 켠 설정이 조용히 꺼지지 않게 한다.
+  ignoreRobots: z.boolean().optional(),
 });
 export type ApplySpecRequest = z.infer<typeof applySpecRequestSchema>;
 
@@ -416,6 +429,9 @@ export type CrawlRun = z.infer<typeof crawlRunSchema>;
 
 export const sourceDetailSchema = z.object({
   subscription: subscriptionSchema,
+  // robots.txt 무시 설정. 재분석 패널의 체크박스 초기값이다. subscriptionSchema에 넣지 않은
+  // 이유는 목록·대시보드 질의가 아무도 표시하지 않는 정책 플래그를 함께 끌고 가야 하기 때문이다.
+  ignoreRobots: z.boolean(),
   fields: z.array(sourceFieldSchema),
   versions: z.array(specVersionSchema),
   runs: z.array(crawlRunSchema),

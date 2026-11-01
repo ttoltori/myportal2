@@ -80,6 +80,7 @@ export async function reanalyzeSource(
   userId: string,
   sourceId: string,
   hint?: string,
+  ignoreRobots?: boolean,
 ): Promise<ReanalyzeResult> {
   // 권한 판정은 sources.ts와 같은 함수를 쓴다 — 소스 없음 404,
   // 구독 안 함 403. 규칙이 엔드포인트마다 갈리면 안 된다.
@@ -109,6 +110,9 @@ export async function reanalyzeSource(
     sourceId,
     // 재분석 호출이 신규 등록(analyze-fields)과 섞이지 않도록 llm_calls에 rebuild로 구분해 남긴다.
     purpose: "rebuild",
+    // 생략하면 소스에 저장된 설정을 쓴다. 이미 robots를 무시하기로 한 소스를 재분석할 때
+    // 체크박스를 다루지 않는 호출처가 금지로 막히지 않게 하려는 것이다.
+    ignoreRobots: ignoreRobots ?? source.ignore_robots === true,
   });
 
   const currentFields = fields.rows.map(toSourceField);
@@ -493,6 +497,8 @@ export async function applySpecForSource(
       input.fetchStrategy,
       status,
       discoveredFeedUrl,
+      // 생략(undefined)은 "그대로 둔다"는 의사이므로 null로 넘겨 SQL의 coalesce가 기존 값을 쓰게 한다.
+      input.ignoreRobots ?? null,
     ]);
     await tx.query(sourcesSql.insertManualAction, [userId, sourceId, ACTION_APPLY_SPEC]);
 

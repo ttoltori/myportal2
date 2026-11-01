@@ -22,10 +22,12 @@ export const reanalyzeSql = {
   // 분기는 sources.feed_url만 읽으므로, 재분석이 새로 발견한 피드가 spec.feedUrl에만
   // 있으면 feedTarget이 HTML 페이지를 가리켜 looksLikeFeed가 실패하고 영구히 0건이 된다.
   // 기존 값을 null로 지우지 않도록 coalesce를 쓴다(sourcesSql.updateAfterRun과 동일 관례).
+  // $5가 null이면 robots 무시 설정을 그대로 둔다 — 요청이 이 값을 생략했다는 뜻이다.
   updateSourceAfterApply: `
     update myportal.sources
     set fetch_strategy = $2, status = $3, consecutive_failures = 0, consecutive_empty = 0,
-        feed_url = coalesce($4, feed_url)
+        feed_url = coalesce($4, feed_url),
+        ignore_robots = coalesce($5::boolean, ignore_robots)
     where id = $1
   `,
   // 매칭에 필요한 컬럼만 읽는다. 소스의 항목 전체를 한 번에 메모리 맵으로 만든다.

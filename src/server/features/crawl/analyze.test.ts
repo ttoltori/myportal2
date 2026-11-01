@@ -469,6 +469,28 @@ describe("analyzeListing", () => {
     expect(fetchPage).not.toHaveBeenCalled();
   });
 
+  it("ignoreRobots면 robots를 조회하지 않고 warn 단계를 남긴 뒤 분석을 계속한다", async () => {
+    // robots가 금지라고 답해도 막히지 않아야 한다. 조회 자체를 하지 않으므로
+    // 금지 응답은 결과에 영향을 주지 않는다 (요청 하나와 최대 8초를 아낀다).
+    vi.mocked(robotsAllowed).mockResolvedValue(false);
+    const r = await analyzeListing({ ...args, ignoreRobots: true });
+
+    expect(robotsAllowed).not.toHaveBeenCalled();
+    expect(r.blocked).toBeNull();
+    expect(r.outcome?.rows.length).toBeGreaterThan(0);
+    // 선택의 흔적이 분석 로그에 남아야 한다 — ok로 남기면 준수한 분석과 구별되지 않는다.
+    expect(r.steps.find((st) => st.label === "robots.txt 확인")).toMatchObject({
+      status: "warn",
+    });
+  });
+
+  it("ignoreRobots를 주지 않으면 기본은 준수다", async () => {
+    vi.mocked(robotsAllowed).mockResolvedValue(false);
+    const r = await analyzeListing(args);
+    expect(robotsAllowed).toHaveBeenCalled();
+    expect(r.blocked?.code).toBe(errorCodes.ROBOTS_DISALLOWED);
+  });
+
   it("fetch 실패면 blocked에 그 오류 코드를 담는다", async () => {
     vi.mocked(fetchPage).mockRejectedValue(new AppError(errorCodes.URL_UNREACHABLE, "접근 불가", 502));
     const r = await analyzeListing(args);

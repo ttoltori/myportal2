@@ -29,7 +29,10 @@ export const sourcesRoutes = new Hono()
   .post("/sources/analyze", async (c) => {
     const body = analyzeRequestSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!body.success) throw validationError("유효한 URL을 입력해주세요.", body.error.issues);
-    return success(c, await analyzeUrl(getUserId(c), body.data.url, body.data.hint));
+    return success(
+      c,
+      await analyzeUrl(getUserId(c), body.data.url, body.data.hint, body.data.ignoreRobots),
+    );
   })
   .post("/sources", async (c) => {
     const parsed = createSourceRequestSchema.safeParse(await c.req.json().catch(() => ({})));
@@ -48,6 +51,7 @@ export const sourcesRoutes = new Hono()
         spec: (d.spec as CrawlSpec | null) ?? null,
         previewRows: (d.previewRows ?? []).map(toExtractedRow),
         profile: d.profile,
+        ignoreRobots: d.ignoreRobots,
       }),
       201,
     );
@@ -61,7 +65,15 @@ export const sourcesRoutes = new Hono()
   .post("/sources/:id/reanalyze", async (c) => {
     const body = reanalyzeRequestSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!body.success) throw validationError("유효하지 않은 요청입니다.", body.error.issues);
-    return success(c, await reanalyzeSource(getUserId(c), c.req.param("id"), body.data.hint));
+    return success(
+      c,
+      await reanalyzeSource(
+        getUserId(c),
+        c.req.param("id"),
+        body.data.hint,
+        body.data.ignoreRobots,
+      ),
+    );
   })
   .post("/sources/:id/apply-spec", async (c) => {
     const body = applySpecRequestSchema.safeParse(await c.req.json().catch(() => ({})));

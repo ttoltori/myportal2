@@ -8,7 +8,7 @@ import { assertPublicUrl, normalizeUrl } from "../features/crawl/url";
 // 터미널에 출력하는 디버깅 도구다. sources/crawl_specs/source_fields에는 아무것도 저장하지 않는다.
 // 다만 LLM을 실제로 호출하므로 llm_calls에 이력이 남고 일별 한도를 소모한다.
 //
-//   pnpm analyze:url <url> [--hint "목록 항목 텍스트 일부"] [--rows 10]
+//   pnpm analyze:url <url> [--hint "목록 항목 텍스트 일부"] [--rows 10] [--ignore-robots]
 
 const DEFAULT_PREVIEW_ROWS = 10;
 const STATUS_MARK: Record<string, string> = { ok: "OK  ", warn: "WARN", fail: "FAIL" };
@@ -18,8 +18,14 @@ function readFlag(name: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
+function hasFlag(name: string): boolean {
+  return process.argv.includes(name);
+}
+
 function usage(): never {
-  console.error('사용법: pnpm analyze:url <url> [--hint "목록 항목 텍스트 일부"] [--rows 10]');
+  console.error(
+    '사용법: pnpm analyze:url <url> [--hint "목록 항목 텍스트 일부"] [--rows 10] [--ignore-robots]',
+  );
   process.exit(2);
 }
 
@@ -41,6 +47,7 @@ async function main() {
   if (!rawUrl || rawUrl.startsWith("--")) usage();
   const hint = readFlag("--hint")?.trim() || undefined;
   const previewRows = Number(readFlag("--rows") ?? DEFAULT_PREVIEW_ROWS);
+  const ignoreRobots = hasFlag("--ignore-robots");
 
   const url = normalizeUrl(rawUrl);
   assertPublicUrl(url);
@@ -53,6 +60,7 @@ async function main() {
     hint,
     sourceId: null,
     purpose: "analyze-fields",
+    ignoreRobots,
   });
   const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
 

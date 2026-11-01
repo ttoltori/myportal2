@@ -433,12 +433,16 @@ function fakeCreateDb(existingSourceId: string | null) {
   const profileWrites: unknown[][] = [];
   const txProfileWrites: unknown[][] = [];
   const dbProfileWrites: unknown[][] = [];
+  const sourceInserts: unknown[][] = [];
   const handler = (writes: unknown[][]) =>
     vi.fn(async (sql: string, params?: unknown[]) => {
       if (sql === sourcesSql.findByNormalizedUrl) {
         return { rows: existingSourceId ? [{ id: existingSourceId }] : [] };
       }
-      if (sql === sourcesSql.insertSource) return { rows: [{ id: "src-new" }] };
+      if (sql === sourcesSql.insertSource) {
+        sourceInserts.push(params ?? []);
+        return { rows: [{ id: "src-new" }] };
+      }
       if (sql === sourcesSql.insertSubscription) return { rows: [{ id: "sub-new" }] };
       if (sql === sourcesSql.updateFetchProfile) {
         profileWrites.push(params ?? []);
@@ -454,6 +458,7 @@ function fakeCreateDb(existingSourceId: string | null) {
     profileWrites,
     txProfileWrites,
     dbProfileWrites,
+    sourceInserts,
   };
   vi.mocked(getDb).mockReturnValue(db as never);
   return db;
@@ -526,6 +531,37 @@ describe("createSourceWithBaseline - 수집 프로파일", () => {
     errSpy.mockRestore();
   });
 
+  it("robots 무시를 선택한 등록은 그 선택을 소스에 저장한다", async () => {
+    const db = fakeCreateDb(null);
+
+    await createSourceWithBaseline("user-1", {
+      ...createInput(VALID_PROFILE),
+      ignoreRobots: true,
+    });
+
+    // 분석에만 적용하고 소스에 남기지 않으면 첫 정기 수집에서 robots에 막혀 pause된다.
+    expect(db.sourceInserts).toHaveLength(1);
+    expect(db.sourceInserts[0].at(-1)).toBe(true);
+  });
+
+  it("선택하지 않은 등록은 준수가 기본값으로 저장된다", async () => {
+    const db = fakeCreateDb(null);
+    await createSourceWithBaseline("user-1", createInput(VALID_PROFILE));
+    expect(db.sourceInserts[0].at(-1)).toBe(false);
+  });
+
+  it("기존 소스를 재사용하는 등록은 robots 설정을 바꾸지 않는다", async () => {
+    const db = fakeCreateDb("src-old");
+
+    await createSourceWithBaseline("user-1", {
+      ...createInput(VALID_PROFILE),
+      ignoreRobots: true,
+    });
+
+    // 공유 소스의 수집 설정을 새 구독자가 바꿀 수 없다 — 프로파일과 같은 규칙이다.
+    expect(db.sourceInserts).toHaveLength(0);
+  });
+
   it("기존 소스를 재사용하는 등록은 잘못된 프로파일이어도 로그를 남기지 않는다", async () => {
     // 재사용 등록은 프로파일을 쓰지 않으므로 검증 실패 로그는 소음이다.
     fakeCreateDb("src-existing");
@@ -589,6 +625,7 @@ function fakeCollectDb(source: {
   feed_url?: string | null;
   consecutive_failures?: number;
   consecutive_empty?: number;
+  ignore_robots?: boolean;
 }) {
   const query = vi.fn(async (sql: string, _params?: unknown[]) => {
     if (sql === sourcesSql.findById) {
@@ -609,6 +646,7 @@ function fakeCollectDb(source: {
             consecutive_failures: source.consecutive_failures ?? 0,
             consecutive_empty: source.consecutive_empty ?? 0,
             fetch_profile: source.fetch_profile ?? {},
+            ignore_robots: source.ignore_robots ?? false,
           },
         ],
       };
@@ -625,6 +663,38 @@ function fakeCollectDb(source: {
   vi.mocked(getDb).mockReturnValue(db as never);
   return db;
 }
+
+describe("collectSource - robots", () => {
+  it("robots 금지면 소스를 pause시키고 403으로 끝낸다", async () => {
+    const db = fakeCollectDb({ fetch_profile: { mode: "static", measuredAt: MEASURED_AT } });
+    vi.mocked(robotsAllowed).mockResolvedValue(false);
+
+    await expect(collectSource("src-1")).rejects.toMatchObject({
+      code: errorCodes.ROBOTS_DISALLOWED,
+    });
+    const pauseCall = db.query.mock.calls.find(
+      (c) => c[0] === sourcesSql.updateAfterRun,
+    );
+    expect(pauseCall?.[1]?.[1]).toBe("pause");
+    expect(fetchPage).not.toHaveBeenCalled();
+  });
+
+  it("ignore_robots 소스는 robots를 조회하지 않고 수집한다", async () => {
+    // 등록·재분석에서 사용자가 무시를 선택한 소스다. 여기서 다시 검사하면 그 소스는
+    // 첫 수집에서 pause되어 선택이 아무 일도 하지 못한다.
+    fakeCollectDb({
+      fetch_profile: { mode: "static", measuredAt: MEASURED_AT },
+      ignore_robots: true,
+    });
+    vi.mocked(robotsAllowed).mockResolvedValue(false);
+
+    const out = await collectSource("src-1");
+
+    expect(out.result).toBe("ok");
+    expect(robotsAllowed).not.toHaveBeenCalled();
+    expect(fetchPage).toHaveBeenCalled();
+  });
+});
 
 describe("collectSource - 수집 프로파일", () => {
   beforeEach(() => {

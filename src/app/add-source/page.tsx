@@ -40,6 +40,9 @@ export default function AddSourcePage() {
   const router = useRouter();
   const [url, setUrl] = useState("");
   const [hint, setHint] = useState("");
+  // robots.txt 금지를 무시할지. 분석과 등록에 함께 적용된다 — 분석만 무시하면
+  // 등록된 소스가 첫 수집에서 pause되어 선택이 사라진다.
+  const [ignoreRobots, setIgnoreRobots] = useState(false);
   const [log, setLog] = useState<LogLine[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState<AnalyzeResult | null>(null);
@@ -112,7 +115,9 @@ export default function AddSourcePage() {
     return `${pad2(t.getHours())}:${pad2(t.getMinutes())}:${pad2(t.getSeconds())}`;
   }, []);
 
-  async function analyze(targetUrl: string) {
+  // ignoreOverride는 'robots 무시하고 다시 분석' 버튼이 setState를 기다리지 않고
+  // 곧바로 무시 분석을 돌리기 위한 것이다(힌트의 hintOverride와 같은 이유).
+  async function analyze(targetUrl: string, ignoreOverride?: boolean) {
     setAnalyzing(true);
     setResult(null);
     setSaved(null);
@@ -121,6 +126,7 @@ export default function AddSourcePage() {
       const res = await api.sources.analyze({
         url: targetUrl,
         hint: hint.trim() || undefined,
+        ignoreRobots: ignoreOverride ?? ignoreRobots,
       });
       setResult(res);
       setLog(res.steps.map((s) => ({ time: logTime(), ...s })));
@@ -182,6 +188,9 @@ export default function AddSourcePage() {
         // 분석이 측정한 렌더링 설정. 빠지면 등록된 소스가 기본값으로 수집되어
         // 렌더링이 필요한 소스는 0건이 될 수 있다.
         profile: result?.preview?.profile ?? null,
+        // 분석에서 무시했으면 소스에도 남긴다. 남기지 않으면 정기 수집이 robots를 검사해
+        // 이 소스를 pause시킨다.
+        ignoreRobots,
       });
       setSaved(res.subscriptionId);
       showToast(
@@ -271,6 +280,23 @@ export default function AddSourcePage() {
             <div className="font-mono text-ink-2" style={{ fontSize: 11, marginTop: 2 }}>
               지금 목록에 보이는 제목의 일부를 넣습니다. 목록 내용은 바뀌므로 이
               문자열은 시간이 지나면 의미가 없어집니다. 영구 설정이 아닙니다.
+            </div>
+
+            <label
+              className="font-mono"
+              style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 14, fontSize: 12 }}
+            >
+              <input
+                type="checkbox"
+                checked={ignoreRobots}
+                onChange={(e) => setIgnoreRobots(e.target.checked)}
+              />
+              robots.txt 금지를 무시하고 분석·수집
+            </label>
+            <div className="font-mono text-ink-2" style={{ fontSize: 11, marginTop: 2 }}>
+              robots.txt는 사이트 운영자가 밝힌 수집 거부 의사입니다. 켜면 등록 후
+              정기 수집까지 같은 선택을 따르며, 차단이나 약관·법적 문제의 책임은
+              등록한 사람에게 있습니다. 소스마다 따로 저장됩니다.
             </div>
 
             <div className="mt-3 flex items-center gap-3">
@@ -410,16 +436,28 @@ export default function AddSourcePage() {
             {result?.outcome === "link-only" && (
               <div className="mt-4">
                 <div className="font-mono text-ink-2" style={{ fontSize: 11 }}>
-                  robots.txt가 수집을 금지합니다. 링크 전용으로만 보관할 수
-                  있습니다.
+                  robots.txt가 수집을 금지합니다. 링크 전용으로만 보관하거나,
+                  금지를 무시하고 분석할 수 있습니다.
                 </div>
-                <button
-                  className="btn mt-2"
-                  disabled={saving}
-                  onClick={() => void save(true)}
-                >
-                  링크 전용으로 저장
-                </button>
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    className="btn"
+                    disabled={saving}
+                    onClick={() => void save(true)}
+                  >
+                    링크 전용으로 저장
+                  </button>
+                  <button
+                    className="btn"
+                    disabled={analyzing}
+                    onClick={() => {
+                      setIgnoreRobots(true);
+                      void analyze(result.normalizedUrl ?? url.trim(), true);
+                    }}
+                  >
+                    robots 무시하고 다시 분석
+                  </button>
+                </div>
               </div>
             )}
           </div>

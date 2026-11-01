@@ -73,6 +73,7 @@ function setupDb(opts: {
   storedSpec?: unknown;
   fields?: FieldRow[];
   status?: string;
+  ignoreRobots?: boolean;
 }) {
   const {
     subscribed = true,
@@ -80,6 +81,7 @@ function setupDb(opts: {
     storedSpec = null,
     fields = [],
     status = "ok",
+    ignoreRobots = false,
   } = opts;
   dbQuery.mockImplementation(async (sql: string) => {
     if (sql === sourcesSql.subscriptionForSource) {
@@ -96,6 +98,7 @@ function setupDb(opts: {
             fetch_strategy: "html",
             status,
             feed_url: null,
+            ignore_robots: ignoreRobots,
           },
         ],
       };
@@ -192,6 +195,25 @@ describe("reanalyzeSource", () => {
     expect(res.outcome).toBe("detail");
     expect(res.preview).toBeNull();
     expect(res.pageText).toBe("본문");
+  });
+
+  it("요청이 ignoreRobots를 생략하면 소스에 저장된 설정으로 분석한다", async () => {
+    setupDb({ ignoreRobots: true });
+    await reanalyzeSource(USER, SOURCE);
+    // 이미 무시로 등록된 소스를, 체크박스를 다루지 않는 호출처가 재분석해도 막히지 않아야 한다.
+    expect(vi.mocked(analyzeListing).mock.calls[0][0].ignoreRobots).toBe(true);
+  });
+
+  it("요청의 ignoreRobots가 저장된 설정을 이긴다", async () => {
+    setupDb({ ignoreRobots: true });
+    await reanalyzeSource(USER, SOURCE, undefined, false);
+    // 사용자가 체크를 푼 것을 저장된 true로 되살리면 의도와 정반대가 된다.
+    expect(vi.mocked(analyzeListing).mock.calls[0][0].ignoreRobots).toBe(false);
+
+    vi.mocked(analyzeListing).mockClear();
+    setupDb({ ignoreRobots: false });
+    await reanalyzeSource(USER, SOURCE, undefined, true);
+    expect(vi.mocked(analyzeListing).mock.calls[0][0].ignoreRobots).toBe(true);
   });
 
   it("robots 금지면 link-only다", async () => {
@@ -598,6 +620,25 @@ describe("applySpecForSource", () => {
     );
   });
 
+  it("ignoreRobots를 생략하면 null을 넘겨 저장된 robots 설정을 그대로 둔다", async () => {
+    await applySpecForSource(USER, SOURCE, applyInput());
+    const [call] = txCallsOf(reanalyzeSql.updateSourceAfterApply);
+    // 이 값을 다루지 않는 호출처가 적용해도 사용자가 켠 설정이 조용히 꺼지면 안 된다.
+    expect(call?.[1]?.[4]).toBeNull();
+    expect(reanalyzeSql.updateSourceAfterApply).toMatch(
+      /ignore_robots\s*=\s*coalesce\(\$5::boolean,\s*ignore_robots\)/,
+    );
+  });
+
+  it("ignoreRobots를 보내면 그 값으로 소스에 확정한다", async () => {
+    await applySpecForSource(USER, SOURCE, applyInput({ ignoreRobots: true }));
+    expect(txCallsOf(reanalyzeSql.updateSourceAfterApply)[0]?.[1]?.[4]).toBe(true);
+
+    txQuery.mockClear();
+    await applySpecForSource(USER, SOURCE, applyInput({ ignoreRobots: false }));
+    expect(txCallsOf(reanalyzeSql.updateSourceAfterApply)[0]?.[1]?.[4]).toBe(false);
+  });
+
   it("status가 fail이면 ok로 바꾸고 consecutive_failures를 0으로 만든다", async () => {
     setupDb({ status: "fail" });
     await applySpecForSource(USER, SOURCE, applyInput());
@@ -611,8 +652,9 @@ describe("applySpecForSource", () => {
     await applySpecForSource(USER, SOURCE, applyInput());
     const [call] = txCallsOf(reanalyzeSql.updateSourceAfterApply);
     expect(call).toBeDefined();
-    // 리셋 값은 파라미터가 아니라 SQL 상수가 고정한다. 파라미터는 id, strategy, status, feed_url뿐이다.
-    expect(call?.[1]).toHaveLength(4);
+    // 리셋 값은 파라미터가 아니라 SQL 상수가 고정한다.
+    // 파라미터는 id, strategy, status, feed_url, ignore_robots뿐이다.
+    expect(call?.[1]).toHaveLength(5);
     expect(reanalyzeSql.updateSourceAfterApply).toMatch(/consecutive_empty\s*=\s*0/);
   });
 

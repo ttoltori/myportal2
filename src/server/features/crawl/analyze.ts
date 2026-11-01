@@ -385,8 +385,10 @@ export async function analyzeListing(args: {
   sourceId: string | null; // llm_calls 기록용
   purpose: LlmPurpose;
   allowRepair?: boolean;
+  // 사용자가 robots.txt 금지를 무시하기로 선택했는가. 기본은 준수다.
+  ignoreRobots?: boolean;
 }): Promise<ListingAnalysis> {
-  const { userId, url, hint, hintSetAt, sourceId, purpose, allowRepair } = args;
+  const { userId, url, hint, hintSetAt, sourceId, purpose, allowRepair, ignoreRobots } = args;
   const startedAt = Date.now();
   const steps: AnalyzeStep[] = [];
   const blockedResult = (code: ErrorCode, detail: string): ListingAnalysis => ({
@@ -406,12 +408,18 @@ export async function analyzeListing(args: {
   });
 
   // 3. robots.txt
-  if (!(await robotsAllowed(url))) {
+  // 무시를 선택하면 조회조차 하지 않는다. 금지 여부를 알아내도 쓰지 않을 값이고,
+  // 그만큼 요청 하나와 최대 8초(robots.ts의 타임아웃)를 아낀다. 대신 무시했다는
+  // 사실을 warn 단계로 남겨 분석 로그에 선택의 흔적이 보이게 한다.
+  if (ignoreRobots) {
+    steps.push(step("robots.txt 확인", "warn", "사용자 설정으로 무시함 — 확인하지 않고 진행"));
+  } else if (!(await robotsAllowed(url))) {
     const detail = "수집이 금지된 경로";
     steps.push(step("robots.txt 확인", "fail", detail));
     return blockedResult(errorCodes.ROBOTS_DISALLOWED, detail);
+  } else {
+    steps.push(step("robots.txt 확인", "ok"));
   }
-  steps.push(step("robots.txt 확인", "ok"));
 
   // 4. 페이지 가져오기
   let page: FetchResult;
@@ -536,6 +544,7 @@ export async function analyzeUrl(
   userId: string,
   rawUrl: string,
   hint?: string,
+  ignoreRobots?: boolean,
 ): Promise<AnalyzeResult> {
   const steps: AnalyzeStep[] = [];
   const db = getDb();
@@ -596,6 +605,7 @@ export async function analyzeUrl(
     hint,
     sourceId: null,
     purpose: "analyze-fields",
+    ignoreRobots,
   });
   steps.push(...listing.steps);
 

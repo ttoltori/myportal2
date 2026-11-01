@@ -8,14 +8,15 @@ export const sourcesSql = {
     select id, url, normalized_url, kind, fetch_strategy, status,
            interval_minutes, fixed_interval, next_crawl_at, last_success_at,
            consecutive_failures, consecutive_empty, etag, last_modified, feed_url, page_title,
-           fetch_profile
+           fetch_profile, ignore_robots
     from myportal.sources
     where id = $1
   `,
   insertSource: `
     insert into myportal.sources
-        (url, normalized_url, kind, fetch_strategy, status, feed_url, page_title, next_crawl_at)
-    values ($1, $2, $3, $4, $5, $6, $7, now())
+        (url, normalized_url, kind, fetch_strategy, status, feed_url, page_title, next_crawl_at,
+         ignore_robots)
+    values ($1, $2, $3, $4, $5, $6, $7, now(), $8)
     returning id
   `,
   insertSubscription: `

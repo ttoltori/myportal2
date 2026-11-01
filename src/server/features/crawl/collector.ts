@@ -283,6 +283,7 @@ export async function collectSource(
         consecutive_failures: number;
         consecutive_empty: number;
         fetch_profile: unknown;
+        ignore_robots: boolean;
       }
     | undefined;
   if (!source) {
@@ -316,7 +317,9 @@ export async function collectSource(
     ]);
   }
 
-  if (!(await robotsAllowed(source.normalized_url))) {
+  // 사용자가 등록·재분석에서 무시를 선택한 소스는 검사하지 않는다. 분석만 무시하고 여기서
+  // 검사하면 그 소스는 첫 수집에서 pause되어, 옵션이 아무 일도 하지 못한다.
+  if (source.ignore_robots !== true && !(await robotsAllowed(source.normalized_url))) {
     await db.query(sourcesSql.updateAfterRun, [
       sourceId,
       "pause",
@@ -504,6 +507,8 @@ export async function createSourceWithBaseline(
     previewRows?: ExtractedRow[];
     // 클라이언트가 분석 결과에서 되돌려 보낸 수집 프로파일. 신뢰할 수 없는 입력이다.
     profile?: unknown;
+    // 분석에서 robots.txt를 무시했는가. 소스에 남겨 정기 수집도 같은 선택을 따르게 한다.
+    ignoreRobots?: boolean;
   },
 ): Promise<{ subscriptionId: string; sourceId: string; baselineCount: number; reusedExisting: boolean }> {
   const db = getDb();
@@ -546,6 +551,9 @@ export async function createSourceWithBaseline(
           status,
           input.spec?.feedUrl ?? null,
           input.displayName.slice(0, 300),
+          // 재사용 분기에는 이 분기가 없다 — 프로파일과 같은 이유로, 공유 소스의 수집 설정을
+          // 새 구독자가 바꿀 수 없다. 남의 소스를 robots 무시로 돌려놓는 일을 막는다.
+          input.ignoreRobots === true,
         ],
       );
       sourceId = ins[0].id;

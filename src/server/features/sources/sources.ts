@@ -149,6 +149,7 @@ export async function getSourceDetail(
 
   return {
     subscription,
+    ignoreRobots: source.ignore_robots === true,
     fields: fields.rows.map((f) => ({
       key: f.key,
       label: f.label,

@@ -102,6 +102,9 @@ export default function SourceDetailPage() {
   const [reanalysis, setReanalysis] = useState<ReanalyzeResult | null>(null);
   const [panelFields, setPanelFields] = useState<SourceField[]>([]);
   const [panelHint, setPanelHint] = useState("");
+  // robots.txt 금지를 무시할지. 패널을 열 때 소스에 저장된 설정으로 초기화하고,
+  // 적용(apply-spec) 시점에 소스에 확정된다 — 재분석만으로는 아무것도 저장되지 않는다.
+  const [panelIgnoreRobots, setPanelIgnoreRobots] = useState(false);
   const [pageTextFilter, setPageTextFilter] = useState("");
 
   const log = useCallback((text: string) => {
@@ -158,7 +161,7 @@ export default function SourceDetailPage() {
 
   // hintOverride는 '힌트 없이 재분석' 버튼이 상태 갱신을 기다리지 않고 빈 문자열을
   // 확정해서 넘기기 위한 것이다.
-  async function reanalyze(hintOverride?: string) {
+  async function reanalyze(hintOverride?: string, ignoreOverride?: boolean) {
     if (busy) return;
     setBusy(true);
     log("다시 분석 요청 … 진행 중");
@@ -168,6 +171,9 @@ export default function SourceDetailPage() {
       // 문자열로 보내고, 비어 있으면 빈 문자열("")이 그대로 나간다.
       const res = await api.sources.reanalyze(sourceId, {
         hint: (hintOverride ?? panelHint).trim(),
+        // 항상 보낸다. 생략은 "저장된 설정을 쓴다"는 뜻이라, 사용자가 체크를 푼 것을
+        // 저장된 true로 되살려 버리면 의도와 정반대가 된다.
+        ignoreRobots: ignoreOverride ?? panelIgnoreRobots,
       });
       setReanalysis(res);
       setPanelFields(res.preview?.fields ?? []);
@@ -197,6 +203,9 @@ export default function SourceDetailPage() {
         hint: panelHint.trim(),
         // 분석이 측정한 수집 프로파일. 빠지면 적용한 스펙이 기본 수집 방식으로 돌아간다.
         profile: preview.profile ?? null,
+        // 이 분석을 돌린 설정을 그대로 소스에 확정한다. 보내지 않으면 robots를 무시해
+        // 얻은 미리보기를 적용하고도 수집은 금지에 막혀 0건이 된다.
+        ignoreRobots: panelIgnoreRobots,
       });
       log(
         `버전 ${res.version} 적용 · 백필 ${res.backfilled}건 · 신규 ${res.inserted}건` +
@@ -239,6 +248,7 @@ export default function SourceDetailPage() {
   }
 
   const sub = detail.subscription;
+  const savedIgnoreRobots = detail.ignoreRobots;
   const selectedVersion = detail.versions.find((v) => v.version === selVersion);
 
   // 활성 스펙에 저장된 힌트. 낡아 있을 수 있으므로 보여주고 고치게 한다.
@@ -250,6 +260,7 @@ export default function SourceDetailPage() {
 
   function openReanalyzePanel() {
     setPanelHint(typeof storedHint === "string" ? storedHint : "");
+    setPanelIgnoreRobots(savedIgnoreRobots);
     setReanalysis(null);
     setPanelFields([]);
     setPageTextFilter("");
@@ -436,6 +447,32 @@ export default function SourceDetailPage() {
                 {busy ? "분석 중…" : reanalysis ? "다시 분석" : "분석 시작"}
               </button>
             </div>
+
+            <label
+              className="font-mono"
+              style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 10, fontSize: 12 }}
+            >
+              <input
+                type="checkbox"
+                checked={panelIgnoreRobots}
+                onChange={(e) => setPanelIgnoreRobots(e.target.checked)}
+              />
+              robots.txt 금지를 무시하고 분석·수집
+            </label>
+            <div className="font-mono text-ink-2" style={{ fontSize: 11, marginTop: 2 }}>
+              robots.txt는 사이트 운영자가 밝힌 수집 거부 의사입니다. 분석 결과를
+              적용할 때 이 소스에 저장되어 정기 수집까지 같은 선택을 따르며, 차단이나
+              약관·법적 문제의 책임은 등록한 사람에게 있습니다.
+              {savedIgnoreRobots !== panelIgnoreRobots &&
+                " 지금은 저장된 설정과 다릅니다 — 적용하면 바뀝니다."}
+            </div>
+
+            {reanalysis?.errorCode === "ROBOTS_DISALLOWED" && (
+              <div className="font-mono text-ink-2" style={{ fontSize: 11, marginTop: 6 }}>
+                robots.txt가 이 경로의 수집을 금지합니다. 위 체크박스를 켜고 다시
+                분석하면 금지를 무시할 수 있습니다.
+              </div>
+            )}
 
             {reanalysis?.storedHint && (
               <div
